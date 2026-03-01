@@ -12,7 +12,7 @@
   "author": "Steve",
   "license": "MIT",
   "dependencies": {
-    "@deepgram/sdk": "^4.13.0",
+    "@deepgram/sdk": "^4.11.3",
     "axios": "^1.12.2",
     "date-fns": "^4.1.0",
     "date-fns-tz": "^3.2.0",
