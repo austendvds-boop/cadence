@@ -1,0 +1,36 @@
+{
+  "name": "cadence",
+  "version": "1.0.0",
+  "description": "DVDS custom AI voice agent",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "author": "Steve",
+  "license": "MIT",
+  "dependencies": {
+    "@deepgram/sdk": "^4.13.0",
+    "axios": "^1.12.2",
+    "date-fns": "^4.1.0",
+    "date-fns-tz": "^3.2.0",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "openai": "^6.7.0",
+    "pino": "^10.1.0",
+    "pino-pretty": "^13.1.2",
+    "twilio": "^5.10.4",
+    "ws": "^8.18.3",
+    "xmlbuilder2": "^4.0.0",
+    "zod": "^4.1.11"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.5.2",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.2"
+  }
+}
