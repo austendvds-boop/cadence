@@ -74,6 +74,10 @@ export function handleTwilioMedia(ws: WebSocket) {
       const chunks = await synthesizeMuLawBase64(greeting);
       for (const payload of chunks) ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
       speaking = false;
+      // Wait for audio to finish playing on caller's end before accepting input
+      // Each chunk is 160 bytes of 8kHz mulaw = 20ms of audio
+      const playbackMs = chunks.length * 20 + 800;
+      await new Promise(r => setTimeout(r, playbackMs));
       introPlaying = false;
     }
     if (msg.event === 'media' && msg.media?.payload) {
