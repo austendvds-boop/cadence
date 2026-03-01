@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { mulaw } from 'alawmulaw';
 import { env } from '../utils/env';
 import { SYSTEM_PROMPT } from '../conversation/system-prompt';
 import { toolDefinitions } from './tools';
@@ -18,15 +19,45 @@ export async function runAgent(messages: ChatMsg[]) {
   return response.choices[0]?.message;
 }
 
+function downsample24kTo8kPcm16(input: Int16Array): Int16Array {
+  const outputLength = Math.floor(input.length / 3);
+  const output = new Int16Array(outputLength);
+
+  for (let i = 0, j = 0; i < outputLength; i += 1, j += 3) {
+    const a = input[j] ?? 0;
+    const b = input[j + 1] ?? a;
+    const c = input[j + 2] ?? b;
+    output[i] = Math.round((a + b + c) / 3);
+  }
+
+  return output;
+}
+
+function chunkBuffer(buf: Buffer, chunkSize: number): Buffer[] {
+  const chunks: Buffer[] = [];
+  for (let i = 0; i < buf.length; i += chunkSize) {
+    chunks.push(buf.subarray(i, Math.min(i + chunkSize, buf.length)));
+  }
+  return chunks;
+}
+
 export async function synthesizeMuLawBase64(text: string): Promise<string[]> {
   if (!openai) throw new Error('Missing OPENAI_API_KEY');
+
   const speech = await openai.audio.speech.create({
     model: env.OPENAI_TTS_MODEL,
     voice: env.OPENAI_TTS_VOICE as any,
     input: text,
-    response_format: 'wav',
+    response_format: 'pcm',
   });
-  const arr = new Uint8Array(await speech.arrayBuffer());
-  // Placeholder conversion. TODO: wav->8k mulaw exact conversion.
-  return [Buffer.from(arr).toString('base64')];
+
+  const pcm24kBuffer = Buffer.from(await speech.arrayBuffer());
+  const pcm24k = new Int16Array(pcm24kBuffer.buffer, pcm24kBuffer.byteOffset, Math.floor(pcm24kBuffer.byteLength / 2));
+  const pcm8k = downsample24kTo8kPcm16(pcm24k);
+
+  const ulawBytes = Buffer.from(mulaw.encode(pcm8k));
+
+  // Twilio media streams commonly use ~20ms frames (160 bytes at 8kHz, mono, μ-law)
+  const frames = chunkBuffer(ulawBytes, 160);
+  return frames.map((frame) => frame.toString('base64'));
 }

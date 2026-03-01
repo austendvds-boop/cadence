@@ -11,6 +11,7 @@ export function handleTwilioMedia(ws: WebSocket) {
   let callSid = '';
   let finalParts: string[] = [];
   let speaking = false;
+  let introPlaying = false;
   const history: ChatMsg[] = [];
 
   const dg = createDeepgramBridge({
@@ -64,13 +65,22 @@ export function handleTwilioMedia(ws: WebSocket) {
       streamSid = msg.start?.streamSid;
       callSid = msg.start?.callSid;
       logger.info({ streamSid, callSid }, 'Twilio stream started');
-      history.push({ role: 'assistant', content: 'Hi, thanks for calling Deer Valley Driving School! How can I help you today?' });
-      const chunks = await synthesizeMuLawBase64('Hi, thanks for calling Deer Valley Driving School! How can I help you today?');
+
+      const greeting = "Hi, thanks for calling Deer Valley Driving School! I'm an AI assistant. I can answer questions about our packages and pricing, or text you a link to book online. How can I help you today?";
+      history.push({ role: 'assistant', content: greeting });
+
+      introPlaying = true;
+      speaking = true;
+      const chunks = await synthesizeMuLawBase64(greeting);
       for (const payload of chunks) ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
+      speaking = false;
+      introPlaying = false;
     }
     if (msg.event === 'media' && msg.media?.payload) {
-      dg.sendMulaw(Buffer.from(msg.media.payload, 'base64'));
-      logger.debug('incoming audio packet');
+      if (!introPlaying) {
+        dg.sendMulaw(Buffer.from(msg.media.payload, 'base64'));
+        logger.debug('incoming audio packet');
+      }
     }
     if (msg.event === 'stop') {
       dg.close();
