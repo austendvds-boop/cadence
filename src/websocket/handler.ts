@@ -51,12 +51,7 @@ export function handleTwilioMedia(ws: WebSocket) {
       }
     },
     onSpeechStarted: () => {
-      if (introPlaying) {
-        ws.send(JSON.stringify({ event: 'clear', streamSid }));
-        introPlaying = false;
-        speaking = false;
-        if (introTimer) { clearTimeout(introTimer); introTimer = null; }
-      } else if (speaking) {
+      if (!introPlaying && speaking) {
         ws.send(JSON.stringify({ event: 'clear', streamSid }));
         speaking = false;
       }
@@ -158,3 +153,4 @@ export function handleTwilioMedia(ws: WebSocket) {
 
   ws.on('close', () => dg.close());
 }
+
