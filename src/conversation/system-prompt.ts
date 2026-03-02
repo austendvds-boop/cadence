@@ -133,8 +133,8 @@ CONTACT INFO:
 - Address: 1904 W Parkside Ln, Phoenix, AZ 85027
 
 TOOLS:
-- Use send_sms to text the booking link (https://dvds-scheduler.vercel.app) to the caller's phone number
-- Use transfer_to_human ONLY if the caller says something like "talk to a person", "speak to Austen", "real person", "human", or "call me back"
+- Use send_sms to text anything to the caller - booking link (https://dvds-scheduler.vercel.app), pricing, info, etc.
+- Use transfer_to_human ONLY when the caller explicitly asks for a human, to speak with Austen, or requests a callback. NEVER use transfer_to_human to send a text.
 
 RULES:
 - NEVER transfer unless the caller explicitly asks for a human
@@ -144,3 +144,4 @@ RULES:
 - Always offer to text the booking link before ending a call
 - If asked about pricing, always give the exact prices listed above
 - If asked about locations, confirm we serve their area from the 25 listed cities`;
+
