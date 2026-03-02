@@ -102,7 +102,7 @@ export async function* streamMuLawChunks(text: string): AsyncGenerator<string> {
     if (ulawBytes.length > 0) yield ulawBytes.toString('base64');
   }
 }
-export async function* streamDeepgramTTS(text: string): AsyncGenerator<string> {
+export async function* streamDeepgramTTS(text: string, signal?: AbortSignal): AsyncGenerator<string> {
   const apiKey = env.DEEPGRAM_API_KEY;
   if (!apiKey) throw new Error('Missing DEEPGRAM_API_KEY');
 
@@ -115,6 +115,7 @@ export async function* streamDeepgramTTS(text: string): AsyncGenerator<string> {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ text }),
+    signal,
   });
 
   if (!response.ok) {
@@ -122,7 +123,7 @@ export async function* streamDeepgramTTS(text: string): AsyncGenerator<string> {
     throw new Error(`Deepgram TTS error ${response.status}: ${errText}`);
   }
 
-  const FRAME_SIZE = 160; // 20ms at 8kHz µ-law
+  const FRAME_SIZE = 160; // 20ms at 8kHz ï¿½-law
   let remainder = Buffer.alloc(0);
 
   for await (const rawChunk of (response.body as any)) {

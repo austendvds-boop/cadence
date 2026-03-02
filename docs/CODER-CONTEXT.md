@@ -108,3 +108,14 @@ pm run build passed (TypeScript compile clean).
   - Changed `utterance_end_ms` from `900` back to `1200` to restore stable Deepgram WebSocket handshake/streaming behavior.
   - Left `endpointing` unchanged at `400`.
 - Build verification: `npm run typecheck` passed (TypeScript compile clean).
+
+## 2026-03-02 (Filler chime + barge-in interruption)
+- Updated `src/websocket/handler.ts`:
+  - Added generated filler chime utility (`generateChimeFramesBase64`) producing a short 8kHz mono μ-law tone (base64 Twilio media frames).
+  - Added `playProcessingChime()` and invoked it only on `onUtteranceEnd` immediately before `respond()` (after user stops speaking).
+  - Added explicit `isSpeaking` state for active response TTS playback, separate from existing `speaking` echo-gate behavior.
+  - Added barge-in flow for `onInterim` and `onSpeechStarted` while `isSpeaking=true`: send Twilio `{ event: 'clear', streamSid }`, abort active TTS stream, reset speaking flags.
+  - Added abortable TTS playback lifecycle with `AbortController` (`activeTtsAbort`) and stop/close cleanup.
+- Updated `src/llm/openai.ts`:
+  - Extended `streamDeepgramTTS(text, signal?)` to accept optional `AbortSignal` and pass it to `fetch` for cancellation.
+- Build verification: `npm run build` passed (TypeScript compile clean).
