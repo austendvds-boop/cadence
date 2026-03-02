@@ -187,6 +187,7 @@ export function handleTwilioMedia(ws: WebSocket) {
     } catch (err: any) {
       if (err?.name !== 'AbortError') throw err;
     } finally {
+      controller.abort();
       if (activeTtsAbort === controller) activeTtsAbort = null;
       isSpeaking = false;
       speaking = false;
