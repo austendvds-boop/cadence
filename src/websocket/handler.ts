@@ -267,7 +267,7 @@ export function handleTwilioMedia(ws: WebSocket) {
   let activeTtsAbort: AbortController | null = null;
   const history: ChatMsg[] = [];
 
-  function bargeIn(reason: 'interim' | 'speech_started') {
+  function bargeIn(reason: 'final_transcript') {
     if (!isSpeaking || introPlaying) return;
     logger.info({ reason }, 'barge-in: clearing outbound audio');
     ws.send(JSON.stringify({ event: 'clear', streamSid }));
@@ -321,14 +321,12 @@ export function handleTwilioMedia(ws: WebSocket) {
   }
 
   const dg = createDeepgramBridge({
-    onInterim: (t) => {
-      if (introPlaying) return;
-      if (isSpeaking && t.trim().length > 0) {
-        bargeIn('interim');
-      }
-    },
+    onInterim: () => {},
     onFinal: (t) => {
       logger.info({ transcript: t }, 'STT final');
+      if (!introPlaying && (isSpeaking || speaking) && t.trim().length > 0) {
+        bargeIn('final_transcript');
+      }
       finalParts.push(t);
     },
     onUtteranceEnd: async () => {
@@ -350,12 +348,7 @@ export function handleTwilioMedia(ws: WebSocket) {
         logger.error({ err }, 'onUtteranceEnd error');
       }
     },
-    onSpeechStarted: () => {
-      if (introPlaying) return;
-      if (isSpeaking) {
-        bargeIn('speech_started');
-      }
-    }
+    onSpeechStarted: () => {}
   });
 
   async function respond(depth = 0) {
