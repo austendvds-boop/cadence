@@ -14,5 +14,6 @@ pm run build passed.
 - Wrapped esponding lifecycle around wait respond() and reset in catch for safe re-entry after errors.
 - Build verification: 
 pm run build passed (TypeScript compile clean).
-- Commit: <pending>
+- Commit: 6c874a4
+
 
