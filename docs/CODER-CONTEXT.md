@@ -119,3 +119,10 @@ pm run build passed (TypeScript compile clean).
 - Updated `src/llm/openai.ts`:
   - Extended `streamDeepgramTTS(text, signal?)` to accept optional `AbortSignal` and pass it to `fetch` for cancellation.
 - Build verification: `npm run build` passed (TypeScript compile clean).
+
+## 2026-03-02 (Remove filler chime, keep barge-in)
+- Updated `src/websocket/handler.ts`:
+  - Removed filler chime generation utility (`generateChimeFramesBase64`) and chime playback helper.
+  - Removed chime playback call from `onUtteranceEnd` before `respond()`.
+  - Kept barge-in/interruptibility logic intact (`isSpeaking`, `onInterim`/`onSpeechStarted`, `AbortController` cancellation flow).
+- Build verification: `npm run build` passed (TypeScript compile clean).

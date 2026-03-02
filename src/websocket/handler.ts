@@ -1,4 +1,3 @@
-import { mulaw } from 'alawmulaw';
 import { WebSocket } from 'ws';
 import { logger } from '../utils/logger';
 import { createDeepgramBridge } from '../stt/deepgram';
@@ -6,33 +5,6 @@ import { runAgent, streamDeepgramTTS, type ChatMsg } from '../llm/openai';
 import { executeTool } from '../tools/executor';
 
 type TwilioMsg = { event: string; streamSid?: string; start?: any; media?: { payload: string } };
-
-function generateChimeFramesBase64(options?: { frequencyHz?: number; durationMs?: number; amplitude?: number }): string[] {
-  const sampleRate = 8000;
-  const frameSize = 160;
-  const frequencyHz = options?.frequencyHz ?? 880;
-  const durationMs = options?.durationMs ?? 400;
-  const amplitude = options?.amplitude ?? 0.2;
-  const sampleCount = Math.max(1, Math.floor(sampleRate * (durationMs / 1000)));
-  const fadeSamples = Math.max(1, Math.floor(sampleRate * 0.03)); // 30ms fade in/out
-  const pcm = new Int16Array(sampleCount);
-
-  for (let i = 0; i < sampleCount; i += 1) {
-    const t = i / sampleRate;
-    const wave = Math.sin(2 * Math.PI * frequencyHz * t);
-    const fadeIn = i < fadeSamples ? i / fadeSamples : 1;
-    const fadeOut = i > sampleCount - fadeSamples ? (sampleCount - i) / fadeSamples : 1;
-    const env = Math.max(0, Math.min(1, fadeIn * fadeOut));
-    pcm[i] = Math.round(32767 * amplitude * env * wave);
-  }
-
-  const ulawBytes = Buffer.from(mulaw.encode(pcm));
-  const frames: string[] = [];
-  for (let i = 0; i < ulawBytes.length; i += frameSize) {
-    frames.push(ulawBytes.subarray(i, Math.min(i + frameSize, ulawBytes.length)).toString('base64'));
-  }
-  return frames;
-}
 
 export function handleTwilioMedia(ws: WebSocket) {
   let streamSid = '';
@@ -45,14 +17,7 @@ export function handleTwilioMedia(ws: WebSocket) {
   let introTimer: ReturnType<typeof setTimeout> | null = null;
   let responding = false;
   let activeTtsAbort: AbortController | null = null;
-  const chimeFrames = generateChimeFramesBase64();
   const history: ChatMsg[] = [];
-
-  function playProcessingChime() {
-    for (const payload of chimeFrames) {
-      ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
-    }
-  }
 
   function bargeIn(reason: 'interim' | 'speech_started') {
     if (!isSpeaking || introPlaying) return;
@@ -109,7 +74,6 @@ export function handleTwilioMedia(ws: WebSocket) {
         logger.info({ utterance }, 'utterance end — calling LLM');
         history.push({ role: 'user', content: utterance });
         responding = true;
-        playProcessingChime();
         await respond();
         responding = false;
       } catch (err) {
