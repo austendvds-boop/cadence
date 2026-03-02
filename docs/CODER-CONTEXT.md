@@ -87,3 +87,18 @@ pm run build passed (TypeScript compile clean).
 - Updated `src/websocket/handler.ts`:
   - Added log line after stream parameter parse: `logger.info({ callerNumber }, 'caller number from stream params');`.
 - Build verification: `npm run build` passed (TypeScript compile clean).
+
+## 2026-03-02 (Prompt cleanup + owner summary tool + STT utterance latency)
+- Updated `src/conversation/system-prompt.ts`:
+  - Removed pushy rule requiring booking-link text offer before ending calls.
+  - Replaced package rule to a one-line summary (`$200` to `$1,299`) and only offer texting details when caller asks or is ready to book.
+  - Replaced no-list rule to only offer texting more info when caller asks.
+  - Added TOOLS rule to call `notify_owner` once near call end with caller number and outcome.
+- Updated `src/llm/tools.ts`:
+  - Added `notify_owner` function tool schema with required `summary` string.
+- Updated `src/tools/executor.ts`:
+  - Added `notify_owner` handler to send SMS to `+16026633502` with prefix `📞 Cadence call summary:`.
+- Updated `src/stt/deepgram.ts`:
+  - Changed `utterance_end_ms` from `1200` to `900`.
+  - Left `endpointing` unchanged at `400`.
+- Build verification: `npm run build` passed (TypeScript compile clean).

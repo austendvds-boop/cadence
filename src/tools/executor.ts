@@ -11,6 +11,9 @@ export async function executeTool(name: string, args: any, ctx: { callSid: strin
       }
       return sendSms(phone, args.message);
     }
+    case 'notify_owner': {
+      return sendSms('+16026633502', `📞 Cadence call summary:\n${args.summary}`);
+    }
     default:
       throw new Error(`Unknown tool ${name}`);
   }
