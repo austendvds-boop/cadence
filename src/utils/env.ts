@@ -14,6 +14,7 @@ const EnvSchema = z.object({
   TWILIO_ACCOUNT_SID: z.string().optional(),
   TWILIO_AUTH_TOKEN: z.string().optional(),
   TWILIO_PHONE_NUMBER: z.string().optional(),
+  TWILIO_SMS_NUMBER: z.string().optional(),
   TWILIO_WEBSOCKET_URL: z.string().optional(),
   AUSTEN_CELL_NUMBER: z.string().optional(),
   ACUITY_MINE_USER: z.string().optional(),

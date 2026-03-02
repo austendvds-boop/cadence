@@ -17,6 +17,6 @@ export async function transferToHuman(callSid: string, reason: string) {
 export async function sendSms(phone: string, message: string) {
   if (!twilioClient || !env.TWILIO_PHONE_NUMBER) throw new Error('Twilio SMS not configured');
   if (!phone) throw new Error('No recipient phone number provided');
-  const result = await twilioClient.messages.create({ from: env.TWILIO_PHONE_NUMBER, to: phone, body: message });
+  const result = await twilioClient.messages.create({ from: env.TWILIO_SMS_NUMBER || env.TWILIO_PHONE_NUMBER, to: phone, body: message });
   return { sid: result.sid, status: result.status };
 }

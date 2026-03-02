@@ -1,5 +1,17 @@
 # Coder Context
 
+## 2026-03-02 (Dedicated SMS sender number for outbound texts)
+- Updated `src/twilio/service.ts`:
+  - Changed `sendSms` sender to prefer `env.TWILIO_SMS_NUMBER` and fall back to `env.TWILIO_PHONE_NUMBER`.
+  - New send behavior: `from: env.TWILIO_SMS_NUMBER || env.TWILIO_PHONE_NUMBER`.
+- Updated `src/utils/env.ts`:
+  - Added `TWILIO_SMS_NUMBER` as an optional env var in `EnvSchema`.
+- Rationale:
+  - Allows outbound SMS to use local number `+19284477047` to avoid toll-free carrier block (`30032`) while preserving fallback behavior.
+- Build verification: `npm run build` passed.
+- Deployment note: add `TWILIO_SMS_NUMBER=+19284477047` in Render environment variables manually (not configurable from this repo).
+
+
 ## 2026-03-02 (Greeting barge-in guard + identity wording + SMS error logs)
 - Updated `src/websocket/handler.ts`:
   - Added explicit `if (introPlaying) return;` guards in both Deepgram barge-in triggers (`onInterim`, `onSpeechStarted`) so ambient noise during greeting cannot interrupt intro playback.
