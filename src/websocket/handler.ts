@@ -1,7 +1,7 @@
 import { WebSocket } from 'ws';
 import { logger } from '../utils/logger';
 import { createDeepgramBridge } from '../stt/deepgram';
-import { runAgent, streamDeepgramTTS, type ChatMsg } from '../llm/openai';
+import { runAgent, runAgentStream, streamDeepgramTTS, type ChatMsg } from '../llm/openai';
 import { executeTool } from '../tools/executor';
 import { sendSms } from '../twilio/service';
 
@@ -89,6 +89,49 @@ function generateAscendingChimeFramesBase64(): string[] {
 
 const ASCENDING_CHIME_FRAMES = generateAscendingChimeFramesBase64();
 
+function oneChunkStream(text: string): AsyncIterable<string> {
+  return {
+    async *[Symbol.asyncIterator]() {
+      if (text) yield text;
+    }
+  };
+}
+
+function createAsyncTextQueue() {
+  const queue: string[] = [];
+  let done = false;
+  let waiter: (() => void) | null = null;
+
+  return {
+    push(text: string) {
+      if (!text) return;
+      queue.push(text);
+      const w = waiter;
+      waiter = null;
+      w?.();
+    },
+    close() {
+      done = true;
+      const w = waiter;
+      waiter = null;
+      w?.();
+    },
+    iterable: {
+      async *[Symbol.asyncIterator]() {
+        while (!done || queue.length > 0) {
+          if (queue.length === 0) {
+            await new Promise<void>((resolve) => {
+              waiter = resolve;
+            });
+            continue;
+          }
+          yield queue.shift() as string;
+        }
+      }
+    } as AsyncIterable<string>
+  };
+}
+
 export function handleTwilioMedia(ws: WebSocket) {
   let streamSid = '';
   let callSid = '';
@@ -121,22 +164,26 @@ export function handleTwilioMedia(ws: WebSocket) {
     });
   }
 
-  async function speakText(text: string) {
+  async function speakFromStream(textStream: AsyncIterable<string>) {
     const controller = new AbortController();
     activeTtsAbort?.abort();
     activeTtsAbort = controller;
-    isSpeaking = true;
+    isSpeaking = false;
 
     try {
-      let started = false;
-      for await (const payload of streamDeepgramTTS(text, controller.signal)) {
-        if (!started) {
-          speaking = true;
-          started = true;
-        }
-        if (!isSpeaking || !speaking) break;
-        ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
-      }
+      await streamDeepgramTTS(
+        textStream,
+        (payload) => {
+          if (controller.signal.aborted) return;
+          if (!isSpeaking) {
+            isSpeaking = true;
+            speaking = true;
+          }
+          if (!isSpeaking || !speaking) return;
+          ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
+        },
+        controller.signal
+      );
     } catch (err: any) {
       if (err?.name !== 'AbortError') throw err;
     } finally {
@@ -144,6 +191,10 @@ export function handleTwilioMedia(ws: WebSocket) {
       isSpeaking = false;
       speaking = false;
     }
+  }
+
+  async function speakText(text: string) {
+    await speakFromStream(oneChunkStream(text));
   }
 
   const dg = createDeepgramBridge({
@@ -190,8 +241,18 @@ export function handleTwilioMedia(ws: WebSocket) {
         return;
       }
 
-      const msg = await runAgent(history);
-      logger.info({ hasToolCalls: !!(msg?.tool_calls?.length), content: msg?.content?.slice(0, 80) }, 'LLM response');
+      const tokenQueue = createAsyncTextQueue();
+      const tokenBuffer: string[] = [];
+
+      const ttsTask = speakFromStream(tokenQueue.iterable);
+      const msg = await runAgentStream(history, (token) => {
+        tokenBuffer.push(token);
+        tokenQueue.push(token);
+      });
+      tokenQueue.close();
+      await ttsTask;
+
+      logger.info({ hasToolCalls: !!(msg?.tool_calls?.length), content: tokenBuffer.join('').slice(0, 80) }, 'LLM response');
       if (!msg) return;
 
       if (msg.tool_calls?.length) {
@@ -216,9 +277,8 @@ export function handleTwilioMedia(ws: WebSocket) {
         return respond(depth + 1);
       }
 
-      const text = msg.content || 'Sorry, I had trouble with that. Let me connect you with Austen.';
+      const text = msg.content || tokenBuffer.join('').trim() || 'Sorry, I had trouble with that. Let me connect you with Austen.';
       history.push({ role: 'assistant', content: text });
-      await speakText(text);
     } catch (err) {
       logger.error({ err }, 'respond() error');
       try {
@@ -253,11 +313,11 @@ export function handleTwilioMedia(ws: WebSocket) {
         speaking = true;
         const streamStart = Date.now();
         let chunkCount = 0;
-        for await (const payload of streamDeepgramTTS(greeting)) {
-          if (!introPlaying) break;
+        await streamDeepgramTTS(oneChunkStream(greeting), (payload) => {
+          if (!introPlaying) return;
           ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
           chunkCount++;
-        }
+        });
         const streamDuration = Date.now() - streamStart;
         const remainingPlayback = Math.max(chunkCount * 20 - streamDuration + 800, 800);
         logger.info({ chunks: chunkCount, streamDurationMs: streamDuration, remainingPlayback }, 'greeting sent');

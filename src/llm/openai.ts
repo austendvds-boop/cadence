@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { WebSocket } from 'ws';
 import { mulaw } from 'alawmulaw';
 import { env } from '../utils/env';
 import { SYSTEM_PROMPT } from '../conversation/system-prompt';
@@ -17,6 +18,52 @@ export async function runAgent(messages: ChatMsg[]) {
     tools: toolDefinitions as any,
   });
   return response.choices[0]?.message;
+}
+
+export async function runAgentStream(messages: ChatMsg[], onToken: (token: string) => void) {
+  if (!openai) throw new Error('Missing OPENAI_API_KEY');
+
+  const stream = await openai.chat.completions.create({
+    model: env.OPENAI_MODEL,
+    temperature: 0.7,
+    stream: true,
+    messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages] as any,
+    tools: toolDefinitions as any,
+  });
+
+  let content = '';
+  const toolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }> = [];
+
+  for await (const chunk of stream as any) {
+    const delta = chunk?.choices?.[0]?.delta;
+    if (!delta) continue;
+
+    if (typeof delta.content === 'string' && delta.content.length > 0) {
+      content += delta.content;
+      onToken(delta.content);
+    }
+
+    if (Array.isArray(delta.tool_calls)) {
+      for (const tc of delta.tool_calls) {
+        const idx = tc.index ?? 0;
+        if (!toolCalls[idx]) {
+          toolCalls[idx] = {
+            id: tc.id ?? '',
+            type: 'function',
+            function: { name: '', arguments: '' }
+          };
+        }
+        if (tc.id) toolCalls[idx].id = tc.id;
+        if (tc.function?.name) toolCalls[idx].function.name += tc.function.name;
+        if (tc.function?.arguments) toolCalls[idx].function.arguments += tc.function.arguments;
+      }
+    }
+  }
+
+  return {
+    content,
+    tool_calls: toolCalls.filter((t) => t && t.function.name),
+  } as any;
 }
 
 function downsample24kTo8kPcm16(input: Int16Array): Int16Array {
@@ -57,10 +104,10 @@ export async function synthesizeMuLawBase64(text: string): Promise<string[]> {
 
   const ulawBytes = Buffer.from(mulaw.encode(pcm8k));
 
-  // Twilio media streams commonly use ~20ms frames (160 bytes at 8kHz, mono, μ-law)
   const frames = chunkBuffer(ulawBytes, 160);
   return frames.map((frame) => frame.toString('base64'));
 }
+
 export async function* streamMuLawChunks(text: string): AsyncGenerator<string> {
   if (!openai) throw new Error('Missing OPENAI_API_KEY');
 
@@ -102,7 +149,17 @@ export async function* streamMuLawChunks(text: string): AsyncGenerator<string> {
     if (ulawBytes.length > 0) yield ulawBytes.toString('base64');
   }
 }
-export async function* streamDeepgramTTS(text: string, signal?: AbortSignal): AsyncGenerator<string> {
+
+function extractSentenceChunk(buffer: string): { chunk: string; remainder: string } | null {
+  const match = buffer.match(/([\s\S]*?[.!?])(?=\s|$)/);
+  if (!match) return null;
+  const chunk = match[1]?.trim();
+  if (!chunk) return null;
+  const cut = match.index! + match[1].length;
+  return { chunk, remainder: buffer.slice(cut) };
+}
+
+async function streamDeepgramRest(text: string, signal: AbortSignal | undefined, onFrame: (payload: string) => void): Promise<void> {
   const apiKey = env.DEEPGRAM_API_KEY;
   if (!apiKey) throw new Error('Missing DEEPGRAM_API_KEY');
 
@@ -111,7 +168,7 @@ export async function* streamDeepgramTTS(text: string, signal?: AbortSignal): As
   const response = await fetch(url, {
     method: 'POST',
     headers: {
-      'Authorization': `Token ${apiKey}`,
+      Authorization: `Token ${apiKey}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ text }),
@@ -123,21 +180,118 @@ export async function* streamDeepgramTTS(text: string, signal?: AbortSignal): As
     throw new Error(`Deepgram TTS error ${response.status}: ${errText}`);
   }
 
-  const FRAME_SIZE = 160; // 20ms at 8kHz �-law
+  const FRAME_SIZE = 160;
   let remainder = Buffer.alloc(0);
 
   for await (const rawChunk of (response.body as any)) {
     const buf = Buffer.concat([remainder, Buffer.from(rawChunk)]);
     let offset = 0;
     while (offset + FRAME_SIZE <= buf.length) {
-      yield buf.subarray(offset, offset + FRAME_SIZE).toString('base64');
+      onFrame(buf.subarray(offset, offset + FRAME_SIZE).toString('base64'));
       offset += FRAME_SIZE;
     }
     remainder = buf.subarray(offset);
   }
 
-  // Flush any remaining bytes as a final partial frame
-  if (remainder.length > 0) {
-    yield remainder.toString('base64');
+  if (remainder.length > 0) onFrame(remainder.toString('base64'));
+}
+
+export async function streamDeepgramTTS(
+  textStream: AsyncIterable<string>,
+  onFrame: (payload: string) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  const apiKey = env.DEEPGRAM_API_KEY;
+  if (!apiKey) throw new Error('Missing DEEPGRAM_API_KEY');
+
+  const wsUrl = 'wss://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=mulaw&sample_rate=8000&container=none';
+
+  let fullText = '';
+  let textBuffer = '';
+  let gotAudio = false;
+
+  let ws: WebSocket | null = null;
+
+  try {
+    ws = await new Promise<WebSocket>((resolve, reject) => {
+      const socket = new WebSocket(wsUrl, {
+        headers: { Authorization: `Token ${apiKey}` }
+      });
+
+      const onAbort = () => {
+        socket.close();
+        reject(new DOMException('aborted', 'AbortError'));
+      };
+
+      if (signal?.aborted) return onAbort();
+      signal?.addEventListener('abort', onAbort, { once: true });
+
+      socket.once('open', () => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve(socket);
+      });
+      socket.once('error', reject);
+    });
+
+    ws.on('message', (data, isBinary) => {
+      if (isBinary || Buffer.isBuffer(data)) {
+        gotAudio = true;
+        onFrame(Buffer.from(data as any).toString('base64'));
+      }
+    });
+
+    const ensureOpen = () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        throw new Error('Deepgram websocket not open');
+      }
+    };
+
+    for await (const token of textStream) {
+      if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
+      fullText += token;
+      textBuffer += token;
+
+      while (true) {
+        const split = extractSentenceChunk(textBuffer);
+        if (!split) break;
+        ensureOpen();
+        ws.send(JSON.stringify({ type: 'Speak', text: split.chunk }));
+        ws.send(JSON.stringify({ type: 'Flush' }));
+        textBuffer = split.remainder;
+      }
+    }
+
+    const remaining = textBuffer.trim();
+    if (remaining) {
+      ensureOpen();
+      ws.send(JSON.stringify({ type: 'Speak', text: remaining }));
+    }
+    ensureOpen();
+    ws.send(JSON.stringify({ type: 'Flush' }));
+    ws.send(JSON.stringify({ type: 'Close' }));
+
+    await new Promise<void>((resolve) => {
+      if (!ws) return resolve();
+      ws.once('close', () => resolve());
+      setTimeout(() => resolve(), 2500);
+    });
+  } catch (err: any) {
+    if (err?.name === 'AbortError') {
+      ws?.close();
+      throw err;
+    }
+
+    ws?.close();
+
+    if (!gotAudio) {
+      for await (const token of textStream) {
+        fullText += token;
+      }
+      const fallback = fullText.trim();
+      if (fallback) await streamDeepgramRest(fallback, signal, onFrame);
+      return;
+    }
+
+    throw err;
   }
 }

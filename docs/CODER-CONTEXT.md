@@ -156,3 +156,19 @@ pm run build passed (TypeScript compile clean).
   - Removed chime playback call from `onUtteranceEnd` before `respond()`.
   - Kept barge-in/interruptibility logic intact (`isSpeaking`, `onInterim`/`onSpeechStarted`, `AbortController` cancellation flow).
 - Build verification: `npm run build` passed (TypeScript compile clean).
+
+## 2026-03-02 (Aura-2 WebSocket streaming + sentence chunking)
+- Updated `src/llm/openai.ts`:
+  - Added `runAgentStream(messages, onToken)` using OpenAI chat streaming (`stream: true`) while preserving existing `runAgent()`.
+  - Replaced `streamDeepgramTTS` implementation with Aura-2 WebSocket streaming (`wss://api.deepgram.com/v1/speak?...`).
+  - Implemented sentence-boundary chunking (`.`, `?`, `!` followed by whitespace/end) and sends `{ type: 'Speak', text }` + `{ type: 'Flush' }` per sentence.
+  - Sends `{ type: 'Close' }` after final flush.
+  - Added REST fallback path (`https://api.deepgram.com/v1/speak`) when WebSocket path fails before audio starts.
+- Updated `src/websocket/handler.ts`:
+  - `respond()` now streams LLM tokens through an async queue into `streamDeepgramTTS` for immediate TTS generation.
+  - Twilio media frames are forwarded from Deepgram WebSocket audio callbacks as base64 μ-law payloads.
+  - Preserved abort/barge-in behavior: abort closes active TTS stream, stops forwarding, and retains `isSpeaking`/`speaking` semantics.
+  - Preserved 3-note chime flow (`playProcessingChime()` still runs before `respond()`).
+  - Greeting playback updated to use new `streamDeepgramTTS` async text-stream interface.
+- STT timing untouched (`utterance_end_ms` remains 1200).
+- Build verification: `npm run build` passed (TypeScript compile clean).
