@@ -1,5 +1,22 @@
 # Coder Context
 
+## 2026-03-02 (Auto owner SMS on call close; remove notify_owner tool)
+- Updated `src/websocket/handler.ts`:
+  - Imported `sendSms` from `../twilio/service`.
+  - Added automatic call-end SMS in `ws.on('close')` to `+16026633502` with:
+    - Caller number (`callerNumber` fallback `Unknown`)
+    - User turn count (number of `history` entries with `role === 'user'`)
+    - Last user message truncated to 100 chars (fallback `N/A`)
+  - Kept existing cleanup behavior (`activeTtsAbort?.abort(); dg.close();`).
+  - Wrapped SMS send in non-blocking async `try/catch` so close path stays quiet on SMS failures.
+- Updated `src/conversation/system-prompt.ts`:
+  - Removed `notify_owner` guidance from TOOLS section.
+- Updated `src/llm/tools.ts`:
+  - Removed `notify_owner` function tool definition.
+- Updated `src/tools/executor.ts`:
+  - Removed `notify_owner` tool execution branch.
+- Build verification: `npm run build` passed (TypeScript compile clean).
+
 ## 2026-03-01
 - Fixed barge-in regression in src/websocket/handler.ts.
 - Changed only onSpeechStarted behavior to ignore SpeechStarted while introPlaying is true, and only clear TTS when !introPlaying && speaking.

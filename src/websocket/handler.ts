@@ -3,6 +3,7 @@ import { logger } from '../utils/logger';
 import { createDeepgramBridge } from '../stt/deepgram';
 import { runAgent, streamDeepgramTTS, type ChatMsg } from '../llm/openai';
 import { executeTool } from '../tools/executor';
+import { sendSms } from '../twilio/service';
 
 type TwilioMsg = { event: string; streamSid?: string; start?: any; media?: { payload: string } };
 
@@ -190,6 +191,20 @@ export function handleTwilioMedia(ws: WebSocket) {
   });
 
   ws.on('close', () => {
+    const userTurns = history.filter((m) => m.role === 'user').length;
+    const lastUserMsg = [...history].reverse().find((m) => m.role === 'user')?.content;
+    const lastTopicRaw = typeof lastUserMsg === 'string' ? lastUserMsg.trim() : '';
+    const lastTopic = lastTopicRaw ? (lastTopicRaw.length > 100 ? `${lastTopicRaw.slice(0, 100)}...` : lastTopicRaw) : 'N/A';
+    const summary = `📞 Cadence call ended\nCaller: ${callerNumber || 'Unknown'}\nTurns: ${userTurns}\nLast topic: ${lastTopic}`;
+
+    void (async () => {
+      try {
+        await sendSms('+16026633502', summary);
+      } catch (_) {
+        // Ignore SMS errors on close to avoid noisy shutdown paths.
+      }
+    })();
+
     activeTtsAbort?.abort();
     dg.close();
   });
