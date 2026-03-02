@@ -32,12 +32,16 @@ export function handleTwilioMedia(ws: WebSocket) {
         speaking = false;
       }
     },
-    onFinal: (t) => finalParts.push(t),
+    onFinal: (t) => {
+      logger.info({ transcript: t }, 'STT final');
+      finalParts.push(t);
+    },
     onUtteranceEnd: async () => {
       try {
         const utterance = finalParts.join(' ').trim();
         finalParts = [];
         if (!utterance) return;
+        logger.info({ utterance }, 'utterance end — calling LLM');
         history.push({ role: 'user', content: utterance });
         await respond();
       } catch (err) {
@@ -59,12 +63,14 @@ export function handleTwilioMedia(ws: WebSocket) {
       }
 
       const msg = await runAgent(history);
+      logger.info({ hasToolCalls: !!(msg?.tool_calls?.length), content: msg?.content?.slice(0, 80) }, 'LLM response');
       if (!msg) return;
 
       if (msg.tool_calls?.length) {
         for (const c of msg.tool_calls as any[]) {
           if (c.type !== 'function' || !c.function) continue;
           const args = JSON.parse(c.function.arguments || '{}');
+          logger.info({ tool: c.function.name, args }, 'tool call');
           try {
             const result = await executeTool(c.function.name, args, { callSid, callerNumber });
             history.push({ role: 'tool', name: c.function.name, tool_call_id: c.id, content: JSON.stringify(result) });
@@ -98,31 +104,37 @@ export function handleTwilioMedia(ws: WebSocket) {
   ws.on('message', async (raw) => {
     const msg = JSON.parse(raw.toString()) as TwilioMsg;
     if (msg.event === 'start') {
-      streamSid = msg.start?.streamSid;
-      callSid = msg.start?.callSid;
-      callerNumber = msg.start?.customParameters?.callerNumber || '';
-      if (callerNumber) {
-        history.push({
-          role: 'system',
-          content: `The caller's phone number is ${callerNumber}. Use this exact number for any send_sms tool calls.`
-        } as any);
-      }
-      logger.info({ streamSid, callSid, callerNumber }, 'Twilio stream started');
+      try {
+        streamSid = msg.start?.streamSid;
+        callSid = msg.start?.callSid;
+        callerNumber = msg.start?.customParameters?.callerNumber || '';
+        if (callerNumber) {
+          history.push({
+            role: 'system',
+            content: `The caller's phone number is ${callerNumber}. Use this exact number for any send_sms tool calls.`
+          } as any);
+        }
+        logger.info({ streamSid, callSid, callerNumber }, 'Twilio stream started');
 
-      const greeting = "Hi, thanks for calling Deer Valley Driving School! I'm an AI assistant. I can answer questions about our packages and pricing, or text you a link to book online. How can I help you today?";
-      history.push({ role: 'assistant', content: greeting });
+        const greeting = "Hi, thanks for calling Deer Valley Driving School! I'm an AI assistant. I can answer questions about our packages and pricing, or text you a link to book online. How can I help you today?";
+        history.push({ role: 'assistant', content: greeting });
 
-      introPlaying = true;
-      speaking = true;
-      const chunks = await synthesizeMuLawBase64(greeting);
-      for (const payload of chunks) {
-        if (!introPlaying) break;
-        ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
+        introPlaying = true;
+        speaking = true;
+        const chunks = await synthesizeMuLawBase64(greeting);
+        const playbackMs = chunks.length * 20 + 800;
+        logger.info({ chunks: chunks.length, playbackMs }, 'greeting sent');
+        for (const payload of chunks) {
+          if (!introPlaying) break;
+          ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
+        }
+        speaking = false;
+        await new Promise(r => setTimeout(r, playbackMs));
+        introPlaying = false;
+      } catch (err) {
+        logger.error({ err }, 'start event error');
+        ws.close();
       }
-      speaking = false;
-      const playbackMs = chunks.length * 20 + 800;
-      await new Promise(r => setTimeout(r, playbackMs));
-      introPlaying = false;
     }
     if (msg.event === 'media' && msg.media?.payload) {
       if (!introPlaying) {
