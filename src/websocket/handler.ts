@@ -199,6 +199,7 @@ export function handleTwilioMedia(ws: WebSocket) {
 
   const dg = createDeepgramBridge({
     onInterim: (t) => {
+      if (introPlaying) return;
       if (isSpeaking && t.trim().length > 0) {
         bargeIn('interim');
       }
@@ -227,6 +228,7 @@ export function handleTwilioMedia(ws: WebSocket) {
       }
     },
     onSpeechStarted: () => {
+      if (introPlaying) return;
       if (isSpeaking) {
         bargeIn('speech_started');
       }
@@ -306,7 +308,7 @@ export function handleTwilioMedia(ws: WebSocket) {
         }
         logger.info({ streamSid, callSid, callerNumber }, 'Twilio stream started');
 
-        const greeting = "Hi, thanks for calling Deer Valley Driving School! I'm an AI assistant. I can answer questions about our packages and pricing, or text you a link to book online. How can I help you today?";
+        const greeting = "Hi, thanks for calling Deer Valley Driving School! This is Cadence, how can I help you today?";
         history.push({ role: 'assistant', content: greeting });
 
         introPlaying = true;
@@ -343,22 +345,21 @@ export function handleTwilioMedia(ws: WebSocket) {
     }
   });
 
-  ws.on('close', () => {
+  ws.on('close', async () => {
+    activeTtsAbort?.abort();
+    dg.close();
+
     const userTurns = history.filter((m) => m.role === 'user').length;
     const lastUserMsg = [...history].reverse().find((m) => m.role === 'user')?.content;
     const lastTopicRaw = typeof lastUserMsg === 'string' ? lastUserMsg.trim() : '';
     const lastTopic = lastTopicRaw ? (lastTopicRaw.length > 100 ? `${lastTopicRaw.slice(0, 100)}...` : lastTopicRaw) : 'N/A';
     const summary = `📞 Cadence call ended\nCaller: ${callerNumber || 'Unknown'}\nTurns: ${userTurns}\nLast topic: ${lastTopic}`;
 
-    void (async () => {
-      try {
-        await sendSms('+16026633502', summary);
-      } catch (_) {
-        // Ignore SMS errors on close to avoid noisy shutdown paths.
-      }
-    })();
-
-    activeTtsAbort?.abort();
-    dg.close();
+    try {
+      await sendSms('+16026633502', summary);
+      logger.info({ to: '+16026633502' }, 'call summary SMS sent');
+    } catch (err) {
+      logger.error({ err }, 'call summary SMS failed');
+    }
   });
 }

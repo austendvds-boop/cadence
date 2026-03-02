@@ -1,5 +1,19 @@
 # Coder Context
 
+## 2026-03-02 (Greeting barge-in guard + identity wording + SMS error logs)
+- Updated `src/websocket/handler.ts`:
+  - Added explicit `if (introPlaying) return;` guards in both Deepgram barge-in triggers (`onInterim`, `onSpeechStarted`) so ambient noise during greeting cannot interrupt intro playback.
+  - Updated greeting line to: `"Hi, thanks for calling Deer Valley Driving School! This is Cadence, how can I help you today?"`.
+  - Changed `ws.on('close')` to async close handler that logs SMS success/failure instead of silently swallowing errors.
+  - Close flow now logs:
+    - `logger.info({ to: '+16026633502' }, 'call summary SMS sent')`
+    - `logger.error({ err }, 'call summary SMS failed')`
+- Updated `src/conversation/system-prompt.ts`:
+  - First line changed from AI identity wording to: `You are Cadence, a friendly receptionist for Deer Valley Driving School.`
+- Updated `src/tools/executor.ts`:
+  - Added `logger` import and wrapped `send_sms` execution in `try/catch` to log failures with destination number before rethrowing (`send_sms tool failed`).
+- Build verification: `npm run build` passed (TypeScript compile clean).
+
 ## 2026-03-02 (3-note ascending filler chime on utterance_end)
 - Updated `src/websocket/handler.ts`:
   - Added programmatic chime synthesis (Float32 PCM -> μ-law 8kHz mono) with note sequence:
