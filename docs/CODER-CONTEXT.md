@@ -32,3 +32,13 @@ pm run build passed (TypeScript compile clean).
 - Verified src/tools/executor.ts already falls back to ctx.callerNumber for send_sms; no change required.
 - Build verification: 
 pm run build passed (TypeScript compile clean).
+
+## 2026-03-01 (Phase 1 latency streaming TTS + echo mute)
+- Added streaming TTS generator `streamMuLawChunks` in `src/llm/openai.ts` using OpenAI streaming PCM response, 24kHz->8kHz downsampling reuse via existing `downsample24kTo8kPcm16`, and real-time µ-law base64 frame yields.
+- Updated `src/websocket/handler.ts`:
+  - `speakText` now streams audio chunks from `streamMuLawChunks` and sets `speaking=true` only when first chunk is ready.
+  - Greeting playback in Twilio `start` handler now streams greeting audio and computes `remainingPlayback` based on elapsed stream time.
+  - Twilio `media` handler now guards Deepgram input with `if (!speaking)` to prevent echo-fed barge-in while TTS is playing.
+- Kept `synthesizeMuLawBase64` intact in `src/llm/openai.ts` for compatibility.
+- Did not modify `src/stt/deepgram.ts` endpointing/utterance settings.
+- Build verification: `npm run build` passed (TypeScript compile clean).

@@ -61,3 +61,46 @@ export async function synthesizeMuLawBase64(text: string): Promise<string[]> {
   const frames = chunkBuffer(ulawBytes, 160);
   return frames.map((frame) => frame.toString('base64'));
 }
+export async function* streamMuLawChunks(text: string): AsyncGenerator<string> {
+  if (!openai) throw new Error('Missing OPENAI_API_KEY');
+
+  const FRAME_SAMPLES = 160;
+  const INPUT_SAMPLES_PER_FRAME = FRAME_SAMPLES * 3;
+  const INPUT_BYTES_PER_FRAME = INPUT_SAMPLES_PER_FRAME * 2;
+
+  const response = await (openai.audio.speech as any).with_streaming_response.create({
+    model: env.OPENAI_TTS_MODEL,
+    voice: env.OPENAI_TTS_VOICE as any,
+    input: text,
+    response_format: 'pcm',
+  });
+
+  let remainder = Buffer.alloc(0);
+
+  for await (const rawChunk of response.body) {
+    const buf = Buffer.concat([remainder, Buffer.from(rawChunk)]);
+    let offset = 0;
+
+    while (offset + INPUT_BYTES_PER_FRAME <= buf.length) {
+      const slice = buf.subarray(offset, offset + INPUT_BYTES_PER_FRAME);
+      const pcm24k = new Int16Array(slice.buffer, slice.byteOffset, INPUT_SAMPLES_PER_FRAME);
+      const pcm8k = downsample24kTo8kPcm16(pcm24k);
+      const ulawBytes = Buffer.from(mulaw.encode(pcm8k));
+      yield ulawBytes.toString('base64');
+      offset += INPUT_BYTES_PER_FRAME;
+    }
+
+    remainder = buf.subarray(offset);
+  }
+
+  if (remainder.length >= 2) {
+    const remainingSamples = Math.floor(remainder.length / 2);
+    const slice = remainder.subarray(0, remainingSamples * 2);
+    const pcm24k = new Int16Array(slice.buffer, slice.byteOffset, remainingSamples);
+    const pcm8k = downsample24kTo8kPcm16(pcm24k);
+    const ulawBytes = Buffer.from(mulaw.encode(pcm8k));
+    if (ulawBytes.length > 0) yield ulawBytes.toString('base64');
+  }
+}
+
+

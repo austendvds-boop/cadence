@@ -1,7 +1,7 @@
 import { WebSocket } from 'ws';
 import { logger } from '../utils/logger';
 import { createDeepgramBridge } from '../stt/deepgram';
-import { runAgent, synthesizeMuLawBase64, type ChatMsg } from '../llm/openai';
+import { runAgent, streamMuLawChunks, type ChatMsg } from '../llm/openai';
 import { executeTool } from '../tools/executor';
 
 type TwilioMsg = { event: string; streamSid?: string; start?: any; media?: { payload: string } };
@@ -18,9 +18,12 @@ export function handleTwilioMedia(ws: WebSocket) {
   const history: ChatMsg[] = [];
 
   async function speakText(text: string) {
-    const chunks = await synthesizeMuLawBase64(text);
-    speaking = true;
-    for (const payload of chunks) {
+    let started = false;
+    for await (const payload of streamMuLawChunks(text)) {
+      if (!started) {
+        speaking = true;
+        started = true;
+      }
       if (!speaking) break;
       ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
     }
@@ -131,16 +134,19 @@ export function handleTwilioMedia(ws: WebSocket) {
 
         introPlaying = true;
         speaking = true;
-        const chunks = await synthesizeMuLawBase64(greeting);
-        const playbackMs = chunks.length * 20 + 800;
-        logger.info({ chunks: chunks.length, playbackMs }, 'greeting sent');
-        for (const payload of chunks) {
+        const streamStart = Date.now();
+        let chunkCount = 0;
+        for await (const payload of streamMuLawChunks(greeting)) {
           if (!introPlaying) break;
           ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
+          chunkCount++;
         }
+        const streamDuration = Date.now() - streamStart;
+        const remainingPlayback = Math.max(chunkCount * 20 - streamDuration + 800, 800);
+        logger.info({ chunks: chunkCount, streamDurationMs: streamDuration, remainingPlayback }, 'greeting sent');
         speaking = false;
         await new Promise<void>(r => {
-          introTimer = setTimeout(() => { introPlaying = false; introTimer = null; r(); }, playbackMs);
+          introTimer = setTimeout(() => { introPlaying = false; introTimer = null; r(); }, remainingPlayback);
         });
       } catch (err) {
         logger.error({ err }, 'start event error');
@@ -148,7 +154,9 @@ export function handleTwilioMedia(ws: WebSocket) {
       }
     }
     if (msg.event === 'media' && msg.media?.payload) {
-      dg.sendMulaw(Buffer.from(msg.media.payload, 'base64'));
+      if (!speaking) {
+        dg.sendMulaw(Buffer.from(msg.media.payload, 'base64'));
+      }
       logger.debug('incoming audio packet');
     }
     if (msg.event === 'stop') {
@@ -159,4 +167,5 @@ export function handleTwilioMedia(ws: WebSocket) {
 
   ws.on('close', () => dg.close());
 }
+
 
