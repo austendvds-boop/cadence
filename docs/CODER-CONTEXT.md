@@ -68,3 +68,10 @@ pm run build passed (TypeScript compile clean).
 - No other logic changes were made.
 - Build verification: `npm run build` passed (TypeScript compile clean).
 - Commit: `07b7817`
+
+## 2026-03-02 (Regression fix: caller speech during intro tail)
+- Updated `src/websocket/handler.ts`:
+  - Reverted Twilio `media` forwarding gate from `if (!speaking && !introPlaying)` back to `if (!speaking)` so caller audio reaches Deepgram during the intro `remainingPlayback` window.
+  - In the `introTimer` callback, added `finalParts = [];` when `introPlaying` flips false to discard intro-window transcript garbage.
+- Rationale: keep STT intake open for caller barge-in while still suppressing intro artifacts via existing `if (introPlaying) return` on utterance end plus explicit `finalParts` reset.
+- Build verification: `npm run build` passed (TypeScript compile clean).

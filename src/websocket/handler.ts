@@ -146,7 +146,7 @@ export function handleTwilioMedia(ws: WebSocket) {
         logger.info({ chunks: chunkCount, streamDurationMs: streamDuration, remainingPlayback }, 'greeting sent');
         speaking = false;
         await new Promise<void>(r => {
-          introTimer = setTimeout(() => { introPlaying = false; introTimer = null; r(); }, remainingPlayback);
+          introTimer = setTimeout(() => { introPlaying = false; finalParts = []; introTimer = null; r(); }, remainingPlayback);
         });
       } catch (err) {
         logger.error({ err }, 'start event error');
@@ -154,7 +154,7 @@ export function handleTwilioMedia(ws: WebSocket) {
       }
     }
     if (msg.event === 'media' && msg.media?.payload) {
-      if (!speaking && !introPlaying) {
+      if (!speaking) {
         dg.sendMulaw(Buffer.from(msg.media.payload, 'base64'));
       }
       logger.debug('incoming audio packet');
