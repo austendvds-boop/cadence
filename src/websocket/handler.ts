@@ -154,7 +154,7 @@ export function handleTwilioMedia(ws: WebSocket) {
       }
     }
     if (msg.event === 'media' && msg.media?.payload) {
-      if (!speaking) {
+      if (!speaking && !introPlaying) {
         dg.sendMulaw(Buffer.from(msg.media.payload, 'base64'));
       }
       logger.debug('incoming audio packet');
