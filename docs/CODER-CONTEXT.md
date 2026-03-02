@@ -102,3 +102,9 @@ pm run build passed (TypeScript compile clean).
   - Changed `utterance_end_ms` from `1200` to `900`.
   - Left `endpointing` unchanged at `400`.
 - Build verification: `npm run build` passed (TypeScript compile clean).
+
+## 2026-03-02 (Deepgram websocket stability rollback)
+- Updated `src/stt/deepgram.ts`:
+  - Changed `utterance_end_ms` from `900` back to `1200` to restore stable Deepgram WebSocket handshake/streaming behavior.
+  - Left `endpointing` unchanged at `400`.
+- Build verification: `npm run typecheck` passed (TypeScript compile clean).
