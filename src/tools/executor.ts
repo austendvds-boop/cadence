@@ -6,6 +6,9 @@ export async function executeTool(name: string, args: any, ctx: { callSid: strin
       return transferToHuman(ctx.callSid, 'Caller requested human assistance');
     case 'send_sms': {
       const phone = args.phone || ctx.callerNumber || '';
+      if (!phone) {
+        return { ok: false, error: 'No phone number available to send SMS' };
+      }
       return sendSms(phone, args.message);
     }
     default:

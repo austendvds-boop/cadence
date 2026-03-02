@@ -121,6 +121,7 @@ export function handleTwilioMedia(ws: WebSocket) {
         streamSid = msg.start?.streamSid;
         callSid = msg.start?.callSid;
         callerNumber = msg.start?.customParameters?.callerNumber || '';
+        logger.info({ callerNumber }, 'caller number from stream params');
         if (callerNumber) {
           history.push({
             role: 'system',

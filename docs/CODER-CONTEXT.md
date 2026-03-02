@@ -75,3 +75,15 @@ pm run build passed (TypeScript compile clean).
   - In the `introTimer` callback, added `finalParts = [];` when `introPlaying` flips false to discard intro-window transcript garbage.
 - Rationale: keep STT intake open for caller barge-in while still suppressing intro artifacts via existing `if (introPlaying) return` on utterance end plus explicit `finalParts` reset.
 - Build verification: `npm run build` passed (TypeScript compile clean).
+
+## 2026-03-02 (Ticket-query handling + SMS phone validation)
+- Updated `src/conversation/system-prompt.ts`:
+  - Added FAQ entry clarifying DVDS does not offer defensive driving/ticket dismissal courses.
+  - Added RULES instruction to respond directly to ticket/defensive-driving requests with a no, pivot to driving lessons, and **do not** refer callers to any other service/website/competitor.
+- Updated `src/tools/executor.ts`:
+  - In `send_sms`, added preflight phone validation and explicit non-throwing error response when no number is available: `{ ok: false, error: 'No phone number available to send SMS' }`.
+- Updated `src/twilio/service.ts`:
+  - Added `sendSms` guard that throws `No recipient phone number provided` if `phone` is empty.
+- Updated `src/websocket/handler.ts`:
+  - Added log line after stream parameter parse: `logger.info({ callerNumber }, 'caller number from stream params');`.
+- Build verification: `npm run build` passed (TypeScript compile clean).
