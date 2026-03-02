@@ -1,11 +1,13 @@
 import { sendSms, transferToHuman } from '../twilio/service';
 
-export async function executeTool(name: string, args: any, ctx: { callSid: string }) {
+export async function executeTool(name: string, args: any, ctx: { callSid: string; callerNumber?: string }) {
   switch (name) {
     case 'transfer_to_human':
       return transferToHuman(ctx.callSid, 'Caller requested human assistance');
-    case 'send_sms':
-      return sendSms(args.phone, args.message);
+    case 'send_sms': {
+      const phone = args.phone || ctx.callerNumber || '';
+      return sendSms(phone, args.message);
+    }
     default:
       throw new Error(`Unknown tool ${name}`);
   }
