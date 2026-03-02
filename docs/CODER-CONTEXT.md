@@ -61,3 +61,10 @@ pm run build passed (TypeScript compile clean).
 - Replaced the `RULES` block with stricter constraints for one-answer + offer-to-text behavior and explicit package/location phrasing.
 - Preserved all existing package/pricing/location/FAQ/business knowledge content exactly as-is.
 - Build verification: `npm run build` passed (TypeScript compile clean).
+
+## 2026-03-02 (Greeting echo window STT mute fix)
+- Updated `src/websocket/handler.ts` in the Twilio `media` handler to gate Deepgram audio forwarding with `!speaking && !introPlaying`.
+- This prevents STT from ingesting the tail of the greeting during the post-stream intro playback window.
+- No other logic changes were made.
+- Build verification: `npm run build` passed (TypeScript compile clean).
+- Commit: `07b7817`
