@@ -325,7 +325,7 @@ export function handleTwilioMedia(ws: WebSocket) {
     onFinal: (t) => {
       logger.info({ transcript: t }, 'STT final');
       if (!introPlaying && (isSpeaking || speaking) && t.trim().length > 0) {
-        bargeIn('final_transcript');
+        // bargeIn('final_transcript');
       }
       finalParts.push(t);
     },
