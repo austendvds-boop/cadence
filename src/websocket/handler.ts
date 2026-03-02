@@ -14,11 +14,12 @@ export function handleTwilioMedia(ws: WebSocket) {
   let speaking = false;
   let introPlaying = false;
   let introTimer: ReturnType<typeof setTimeout> | null = null;
+  let responding = false;
   const history: ChatMsg[] = [];
 
   async function speakText(text: string) {
-    speaking = true;
     const chunks = await synthesizeMuLawBase64(text);
+    speaking = true;
     for (const payload of chunks) {
       if (!speaking) break;
       ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
@@ -40,13 +41,17 @@ export function handleTwilioMedia(ws: WebSocket) {
     onUtteranceEnd: async () => {
       try {
         if (introPlaying) return;
+        if (responding) return;
         const utterance = finalParts.join(' ').trim();
         finalParts = [];
         if (!utterance) return;
         logger.info({ utterance }, 'utterance end — calling LLM');
         history.push({ role: 'user', content: utterance });
+        responding = true;
         await respond();
+        responding = false;
       } catch (err) {
+        responding = false;
         logger.error({ err }, 'onUtteranceEnd error');
       }
     },
