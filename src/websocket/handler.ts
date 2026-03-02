@@ -76,6 +76,7 @@ export function handleTwilioMedia(ws: WebSocket) {
       if (!msg) return;
 
       if (msg.tool_calls?.length) {
+        history.push({ role: 'assistant', content: msg.content ?? null, tool_calls: msg.tool_calls } as any);
         for (const c of msg.tool_calls as any[]) {
           if (c.type !== 'function' || !c.function) continue;
           const args = JSON.parse(c.function.arguments || '{}');
