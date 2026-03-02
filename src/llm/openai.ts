@@ -68,7 +68,7 @@ export async function* streamMuLawChunks(text: string): AsyncGenerator<string> {
   const INPUT_SAMPLES_PER_FRAME = FRAME_SAMPLES * 3;
   const INPUT_BYTES_PER_FRAME = INPUT_SAMPLES_PER_FRAME * 2;
 
-  const response = await (openai.audio.speech as any).with_streaming_response.create({
+  const response = await openai.audio.speech.create({
     model: env.OPENAI_TTS_MODEL,
     voice: env.OPENAI_TTS_VOICE as any,
     input: text,
@@ -77,7 +77,7 @@ export async function* streamMuLawChunks(text: string): AsyncGenerator<string> {
 
   let remainder = Buffer.alloc(0);
 
-  for await (const rawChunk of response.body) {
+  for await (const rawChunk of (response.body as any)) {
     const buf = Buffer.concat([remainder, Buffer.from(rawChunk)]);
     let offset = 0;
 
