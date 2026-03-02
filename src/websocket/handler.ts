@@ -267,16 +267,6 @@ export function handleTwilioMedia(ws: WebSocket) {
   let activeTtsAbort: AbortController | null = null;
   const history: ChatMsg[] = [];
 
-  function bargeIn(reason: 'interim' | 'speech_started') {
-    if (!isSpeaking || introPlaying) return;
-    logger.info({ reason }, 'barge-in: clearing outbound audio');
-    ws.send(JSON.stringify({ event: 'clear', streamSid }));
-    activeTtsAbort?.abort();
-    activeTtsAbort = null;
-    isSpeaking = false;
-    speaking = false;
-  }
-
   function playProcessingChime() {
     if (!streamSid) return;
     ASCENDING_CHIME_FRAMES.forEach((payload, index) => {
@@ -323,9 +313,6 @@ export function handleTwilioMedia(ws: WebSocket) {
   const dg = createDeepgramBridge({
     onInterim: (t) => {
       if (introPlaying) return;
-      if (isSpeaking && t.trim().length > 0) {
-        bargeIn('interim');
-      }
     },
     onFinal: (t) => {
       logger.info({ transcript: t }, 'STT final');
@@ -352,9 +339,6 @@ export function handleTwilioMedia(ws: WebSocket) {
     },
     onSpeechStarted: () => {
       if (introPlaying) return;
-      if (isSpeaking) {
-        bargeIn('speech_started');
-      }
     }
   });
 
