@@ -1,7 +1,7 @@
 import { WebSocket } from 'ws';
 import { logger } from '../utils/logger';
 import { createDeepgramBridge } from '../stt/deepgram';
-import { runAgent, streamMuLawChunks, type ChatMsg } from '../llm/openai';
+import { runAgent, streamDeepgramTTS, type ChatMsg } from '../llm/openai';
 import { executeTool } from '../tools/executor';
 
 type TwilioMsg = { event: string; streamSid?: string; start?: any; media?: { payload: string } };
@@ -19,7 +19,7 @@ export function handleTwilioMedia(ws: WebSocket) {
 
   async function speakText(text: string) {
     let started = false;
-    for await (const payload of streamMuLawChunks(text)) {
+    for await (const payload of streamDeepgramTTS(text)) {
       if (!started) {
         speaking = true;
         started = true;
@@ -136,7 +136,7 @@ export function handleTwilioMedia(ws: WebSocket) {
         speaking = true;
         const streamStart = Date.now();
         let chunkCount = 0;
-        for await (const payload of streamMuLawChunks(greeting)) {
+        for await (const payload of streamDeepgramTTS(greeting)) {
           if (!introPlaying) break;
           ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
           chunkCount++;
@@ -167,5 +167,6 @@ export function handleTwilioMedia(ws: WebSocket) {
 
   ws.on('close', () => dg.close());
 }
+
 
 

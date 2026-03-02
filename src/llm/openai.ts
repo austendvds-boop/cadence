@@ -102,5 +102,41 @@ export async function* streamMuLawChunks(text: string): AsyncGenerator<string> {
     if (ulawBytes.length > 0) yield ulawBytes.toString('base64');
   }
 }
+export async function* streamDeepgramTTS(text: string): AsyncGenerator<string> {
+  const apiKey = env.DEEPGRAM_API_KEY;
+  if (!apiKey) throw new Error('Missing DEEPGRAM_API_KEY');
 
+  const url = 'https://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=mulaw&sample_rate=8000&container=none';
 
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Token ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ text }),
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    throw new Error(`Deepgram TTS error ${response.status}: ${errText}`);
+  }
+
+  const FRAME_SIZE = 160; // 20ms at 8kHz µ-law
+  let remainder = Buffer.alloc(0);
+
+  for await (const rawChunk of (response.body as any)) {
+    const buf = Buffer.concat([remainder, Buffer.from(rawChunk)]);
+    let offset = 0;
+    while (offset + FRAME_SIZE <= buf.length) {
+      yield buf.subarray(offset, offset + FRAME_SIZE).toString('base64');
+      offset += FRAME_SIZE;
+    }
+    remainder = buf.subarray(offset);
+  }
+
+  // Flush any remaining bytes as a final partial frame
+  if (remainder.length > 0) {
+    yield remainder.toString('base64');
+  }
+}

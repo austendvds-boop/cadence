@@ -42,3 +42,13 @@ pm run build passed (TypeScript compile clean).
 - Kept `synthesizeMuLawBase64` intact in `src/llm/openai.ts` for compatibility.
 - Did not modify `src/stt/deepgram.ts` endpointing/utterance settings.
 - Build verification: `npm run build` passed (TypeScript compile clean).
+
+## 2026-03-01 (Deepgram Aura-2 streaming TTS swap)
+- Added `streamDeepgramTTS` in `src/llm/openai.ts` using raw `fetch` to Deepgram Speak API with `model=aura-2-thalia-en`, `encoding=mulaw`, `sample_rate=8000`, `container=none`.
+- Kept existing `synthesizeMuLawBase64` and `streamMuLawChunks` intact for compatibility.
+- Updated `src/websocket/handler.ts` to replace all `streamMuLawChunks` usage with `streamDeepgramTTS`:
+  - import swap to `streamDeepgramTTS`
+  - `speakText()` now streams from Deepgram TTS
+  - greeting playback in `start` handler now streams from Deepgram TTS
+- Did not modify STT (`src/stt/deepgram.ts`) or env/config.
+- Build verification: `npm run build` passed (TypeScript compile clean).
