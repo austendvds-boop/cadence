@@ -10,8 +10,10 @@ pm run build passed.
 
 ## 2026-03-01 (TTS regression fix)
 - Fixed response-audio drop race in src/websocket/handler.ts by moving speaking = true to after synthesizeMuLawBase64(text) resolves inside speakText().
-- Added let responding = false; state in handleTwilioMedia and guarded onUtteranceEnd with if (responding) return; to prevent concurrent stacked espond() calls.
-- Wrapped esponding lifecycle around wait respond() and reset in catch for safe re-entry after errors.
+- Added let responding = false; state in handleTwilioMedia and guarded onUtteranceEnd with if (responding) return; to prevent concurrent stacked 
+espond() calls.
+- Wrapped 
+esponding lifecycle around wait respond() and reset in catch for safe re-entry after errors.
 - Build verification: 
 pm run build passed (TypeScript compile clean).
 - Commit: 6c874a4
@@ -34,7 +36,7 @@ pm run build passed (TypeScript compile clean).
 pm run build passed (TypeScript compile clean).
 
 ## 2026-03-01 (Phase 1 latency streaming TTS + echo mute)
-- Added streaming TTS generator `streamMuLawChunks` in `src/llm/openai.ts` using OpenAI streaming PCM response, 24kHz->8kHz downsampling reuse via existing `downsample24kTo8kPcm16`, and real-time µ-law base64 frame yields.
+- Added streaming TTS generator `streamMuLawChunks` in `src/llm/openai.ts` using OpenAI streaming PCM response, 24kHz->8kHz downsampling reuse via existing `downsample24kTo8kPcm16`, and real-time ï¿½-law base64 frame yields.
 - Updated `src/websocket/handler.ts`:
   - `speakText` now streams audio chunks from `streamMuLawChunks` and sets `speaking=true` only when first chunk is ready.
   - Greeting playback in Twilio `start` handler now streams greeting audio and computes `remainingPlayback` based on elapsed stream time.
@@ -51,4 +53,11 @@ pm run build passed (TypeScript compile clean).
   - `speakText()` now streams from Deepgram TTS
   - greeting playback in `start` handler now streams from Deepgram TTS
 - Did not modify STT (`src/stt/deepgram.ts`) or env/config.
+- Build verification: `npm run build` passed (TypeScript compile clean).
+
+## 2026-03-01 (System prompt brevity hardening for phone responses)
+- Updated `src/conversation/system-prompt.ts` to enforce strict phone-call brevity behavior.
+- Added a top-line CRITICAL instruction under `WHAT YOU DO` requiring 1-2 sentence spoken responses only, no lists/markdown.
+- Replaced the `RULES` block with stricter constraints for one-answer + offer-to-text behavior and explicit package/location phrasing.
+- Preserved all existing package/pricing/location/FAQ/business knowledge content exactly as-is.
 - Build verification: `npm run build` passed (TypeScript compile clean).
