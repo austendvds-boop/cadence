@@ -2,17 +2,31 @@ import OpenAI from 'openai';
 import { WebSocket } from 'ws';
 import { mulaw } from 'alawmulaw';
 import { env } from '../utils/env';
+import { logger } from '../utils/logger';
 import { SYSTEM_PROMPT } from '../conversation/system-prompt';
 import { toolDefinitions } from './tools';
 
 export type ChatMsg = { role: 'system' | 'user' | 'assistant' | 'tool'; content: string; tool_call_id?: string; name?: string };
 
-export const openai = env.OPENAI_API_KEY ? new OpenAI({ apiKey: env.OPENAI_API_KEY }) : null;
+const useGroq = Boolean(env.GROQ_API_KEY);
+export const llmClient = (useGroq || env.OPENAI_API_KEY)
+  ? new OpenAI({
+      apiKey: useGroq ? env.GROQ_API_KEY : env.OPENAI_API_KEY,
+      baseURL: useGroq ? 'https://api.groq.com/openai/v1' : undefined,
+    })
+  : null;
+export const LLM_MODEL = useGroq ? 'llama-3.3-70b-versatile' : (env.OPENAI_MODEL || 'gpt-4o');
+
+if (llmClient) {
+  logger.info({ provider: useGroq ? 'groq' : 'openai', model: LLM_MODEL }, 'LLM provider initialized');
+}
+
+const openaiTts = env.OPENAI_API_KEY ? new OpenAI({ apiKey: env.OPENAI_API_KEY }) : null;
 
 export async function runAgent(messages: ChatMsg[]) {
-  if (!openai) throw new Error('Missing OPENAI_API_KEY');
-  const response = await openai.chat.completions.create({
-    model: env.OPENAI_MODEL,
+  if (!llmClient) throw new Error('Missing OPENAI_API_KEY or GROQ_API_KEY');
+  const response = await llmClient.chat.completions.create({
+    model: LLM_MODEL,
     temperature: 0.7,
     messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages] as any,
     tools: toolDefinitions as any,
@@ -21,10 +35,10 @@ export async function runAgent(messages: ChatMsg[]) {
 }
 
 export async function runAgentStream(messages: ChatMsg[], onToken: (token: string) => void) {
-  if (!openai) throw new Error('Missing OPENAI_API_KEY');
+  if (!llmClient) throw new Error('Missing OPENAI_API_KEY or GROQ_API_KEY');
 
-  const stream = await openai.chat.completions.create({
-    model: env.OPENAI_MODEL,
+  const stream = await llmClient.chat.completions.create({
+    model: LLM_MODEL,
     temperature: 0.7,
     stream: true,
     messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages] as any,
@@ -89,9 +103,9 @@ function chunkBuffer(buf: Buffer, chunkSize: number): Buffer[] {
 }
 
 export async function synthesizeMuLawBase64(text: string): Promise<string[]> {
-  if (!openai) throw new Error('Missing OPENAI_API_KEY');
+  if (!openaiTts) throw new Error('Missing OPENAI_API_KEY');
 
-  const speech = await openai.audio.speech.create({
+  const speech = await openaiTts.audio.speech.create({
     model: env.OPENAI_TTS_MODEL,
     voice: env.OPENAI_TTS_VOICE as any,
     input: text,
@@ -109,13 +123,13 @@ export async function synthesizeMuLawBase64(text: string): Promise<string[]> {
 }
 
 export async function* streamMuLawChunks(text: string): AsyncGenerator<string> {
-  if (!openai) throw new Error('Missing OPENAI_API_KEY');
+  if (!openaiTts) throw new Error('Missing OPENAI_API_KEY');
 
   const FRAME_SAMPLES = 160;
   const INPUT_SAMPLES_PER_FRAME = FRAME_SAMPLES * 3;
   const INPUT_BYTES_PER_FRAME = INPUT_SAMPLES_PER_FRAME * 2;
 
-  const response = await openai.audio.speech.create({
+  const response = await openaiTts.audio.speech.create({
     model: env.OPENAI_TTS_MODEL,
     voice: env.OPENAI_TTS_VOICE as any,
     input: text,

@@ -7,6 +7,7 @@ const EnvSchema = z.object({
   PORT: z.coerce.number().default(3000),
   BASE_URL: z.string().default('http://localhost:3000'),
   OPENAI_API_KEY: z.string().optional(),
+  GROQ_API_KEY: z.string().optional(),
   OPENAI_MODEL: z.string().default('gpt-4o-mini'),
   OPENAI_TTS_MODEL: z.string().default('tts-1'),
   OPENAI_TTS_VOICE: z.string().default('alloy'),
@@ -26,4 +27,5 @@ const EnvSchema = z.object({
 
 export const env = EnvSchema.parse(process.env);
 
-export const hasRequiredRuntime = Boolean(env.OPENAI_API_KEY && env.DEEPGRAM_API_KEY && env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN);
+const hasLlmKey = Boolean(env.OPENAI_API_KEY || env.GROQ_API_KEY);
+export const hasRequiredRuntime = Boolean(hasLlmKey && env.DEEPGRAM_API_KEY && env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN);
