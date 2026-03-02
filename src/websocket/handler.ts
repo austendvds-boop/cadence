@@ -13,6 +13,7 @@ export function handleTwilioMedia(ws: WebSocket) {
   let finalParts: string[] = [];
   let speaking = false;
   let introPlaying = false;
+  let introTimer: ReturnType<typeof setTimeout> | null = null;
   const history: ChatMsg[] = [];
 
   async function speakText(text: string) {
@@ -38,6 +39,7 @@ export function handleTwilioMedia(ws: WebSocket) {
     },
     onUtteranceEnd: async () => {
       try {
+        if (introPlaying) return;
         const utterance = finalParts.join(' ').trim();
         finalParts = [];
         if (!utterance) return;
@@ -49,8 +51,15 @@ export function handleTwilioMedia(ws: WebSocket) {
       }
     },
     onSpeechStarted: () => {
-      if (speaking) ws.send(JSON.stringify({ event: 'clear', streamSid }));
-      speaking = false;
+      if (introPlaying) {
+        ws.send(JSON.stringify({ event: 'clear', streamSid }));
+        introPlaying = false;
+        speaking = false;
+        if (introTimer) { clearTimeout(introTimer); introTimer = null; }
+      } else if (speaking) {
+        ws.send(JSON.stringify({ event: 'clear', streamSid }));
+        speaking = false;
+      }
     }
   });
 
@@ -129,18 +138,17 @@ export function handleTwilioMedia(ws: WebSocket) {
           ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
         }
         speaking = false;
-        await new Promise(r => setTimeout(r, playbackMs));
-        introPlaying = false;
+        await new Promise<void>(r => {
+          introTimer = setTimeout(() => { introPlaying = false; introTimer = null; r(); }, playbackMs);
+        });
       } catch (err) {
         logger.error({ err }, 'start event error');
         ws.close();
       }
     }
     if (msg.event === 'media' && msg.media?.payload) {
-      if (!introPlaying) {
-        dg.sendMulaw(Buffer.from(msg.media.payload, 'base64'));
-        logger.debug('incoming audio packet');
-      }
+      dg.sendMulaw(Buffer.from(msg.media.payload, 'base64'));
+      logger.debug('incoming audio packet');
     }
     if (msg.event === 'stop') {
       dg.close();
