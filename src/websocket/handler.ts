@@ -97,6 +97,128 @@ function oneChunkStream(text: string): AsyncIterable<string> {
   };
 }
 
+function condenseText(text: string, maxLen = 180): string {
+  const compact = text.replace(/\s+/g, ' ').trim();
+  if (compact.length <= maxLen) return compact;
+  return `${compact.slice(0, Math.max(0, maxLen - 3))}...`;
+}
+
+function inferInterestLevel(userMessages: string[]): 'High' | 'Medium' | 'Low' {
+  const text = userMessages.join(' ').toLowerCase();
+  if (!text) return 'Low';
+
+  const highSignals = [
+    'book',
+    'booking',
+    'schedule',
+    'sign up',
+    'sign-up',
+    'enroll',
+    'enrol',
+    'register',
+    'buy',
+    'purchase',
+    'pay',
+    'checkout',
+    'availability',
+    'available',
+    'dates',
+    'times',
+    'how do i book',
+    'can i book',
+    'set up'
+  ];
+
+  const mediumSignals = [
+    'price',
+    'pricing',
+    'cost',
+    'package',
+    'lessons',
+    'hours',
+    'permit',
+    'road test',
+    'waiver',
+    'insurance',
+    'discount',
+    'reschedule',
+    'cancel',
+    'location',
+    'area',
+    'city',
+    'spanish',
+    'special needs',
+    'esa',
+    'classwallet'
+  ];
+
+  const lowSignals = ['not interested', 'just looking', 'just curious', 'calling around', 'price shopping', 'complaint', 'refund'];
+
+  let score = 0;
+  if (highSignals.some((s) => text.includes(s))) score += 2;
+  if (mediumSignals.some((s) => text.includes(s))) score += 1;
+  if (lowSignals.some((s) => text.includes(s))) score -= 2;
+
+  if (score >= 2) return 'High';
+  if (score >= 1) return 'Medium';
+  return 'Low';
+}
+
+function inferMainTopic(userMessages: string[]): string {
+  const text = userMessages.join(' ').toLowerCase();
+  if (!text) return 'General inquiry';
+
+  const topics: { topic: string; keywords: string[] }[] = [
+    { topic: 'License-Ready Package', keywords: ['license ready', 'license-ready'] },
+    { topic: 'Ultimate Package', keywords: ['ultimate'] },
+    { topic: 'Intro Package', keywords: ['intro package', 'intro to driving', 'intro'] },
+    { topic: 'Express Package', keywords: ['express'] },
+    { topic: 'Sibling deal', keywords: ['sibling'] },
+    { topic: 'Pricing', keywords: ['price', 'pricing', 'cost', 'how much'] },
+    { topic: 'Booking and scheduling', keywords: ['book', 'booking', 'schedule', 'availability', 'date', 'time', 'checkout'] },
+    {
+      topic: 'Service area',
+      keywords: [
+        'area',
+        'location',
+        'city',
+        'serve',
+        'phoenix',
+        'mesa',
+        'scottsdale',
+        'glendale',
+        'tempe',
+        'gilbert',
+        'chandler',
+        'goodyear',
+        'peoria',
+        'surprise',
+        'avondale',
+        'buckeye',
+        'queen creek',
+        'san tan',
+        'anthem',
+        'cave creek',
+        'north phoenix'
+      ]
+    },
+    { topic: 'Permit', keywords: ['permit', 'servicearizona', 'mvd'] },
+    { topic: 'Road test waiver', keywords: ['waiver', 'road test', 'roadtest', 'mvd test'] },
+    { topic: 'Insurance certificate', keywords: ['insurance', 'discount'] },
+    { topic: 'Reschedule or cancel', keywords: ['reschedule', 'cancel'] },
+    { topic: 'Spanish instructor', keywords: ['spanish'] },
+    { topic: 'Special needs', keywords: ['special needs', 'disability', 'accommodation'] },
+    { topic: 'ESA / ClassWallet', keywords: ['esa', 'classwallet', 'scholarship'] },
+    { topic: 'Complaints or refunds', keywords: ['complaint', 'refund'] }
+  ];
+
+  for (const entry of topics) {
+    if (entry.keywords.some((k) => text.includes(k))) return entry.topic;
+  }
+
+  return 'General inquiry';
+}
+
 function createAsyncTextQueue() {
   const queue: string[] = [];
   let done = false;
@@ -350,11 +472,17 @@ export function handleTwilioMedia(ws: WebSocket) {
     activeTtsAbort?.abort();
     dg.close();
 
-    const userTurns = history.filter((m) => m.role === 'user').length;
-    const lastUserMsg = [...history].reverse().find((m) => m.role === 'user')?.content;
-    const lastTopicRaw = typeof lastUserMsg === 'string' ? lastUserMsg.trim() : '';
-    const lastTopic = lastTopicRaw ? (lastTopicRaw.length > 100 ? `${lastTopicRaw.slice(0, 100)}...` : lastTopicRaw) : 'N/A';
-    const summary = `📞 Cadence call ended\nCaller: ${callerNumber || 'Unknown'}\nTurns: ${userTurns}\nLast topic: ${lastTopic}`;
+    const userMessages = history
+      .filter((m) => m.role === 'user')
+      .map((m) => (typeof m.content === 'string' ? m.content : ''))
+      .filter((m) => m.trim().length > 0);
+    const userTurns = userMessages.length;
+    const interest = inferInterestLevel(userMessages);
+    const topic = inferMainTopic(userMessages);
+    const conversationLines = userMessages.length
+      ? userMessages.map((m) => `Caller: ${condenseText(m)}`).join('\n')
+      : 'Caller: N/A';
+    const summary = `📞 Cadence Call Summary\nCaller: ${callerNumber || 'Unknown'}\nExchanges: ${userTurns}\nInterest: ${interest}\nTopic: ${topic}\n\nConversation:\n${conversationLines}`;
 
     try {
       await sendSms('+16026633502', summary);
