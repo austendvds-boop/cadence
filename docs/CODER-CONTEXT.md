@@ -1,5 +1,18 @@
 # Coder Context
 
+## 2026-03-02 (3-note ascending filler chime on utterance_end)
+- Updated `src/websocket/handler.ts`:
+  - Added programmatic chime synthesis (Float32 PCM -> μ-law 8kHz mono) with note sequence:
+    - C5 523Hz (120ms), 30ms gap
+    - E5 659Hz (120ms), 30ms gap
+    - G5 784Hz (150ms)
+  - Added 10ms fade-in and 20ms fade-out envelopes per note to avoid clicks.
+  - Set soft amplitude to `0.25`.
+  - Chunked synthesized μ-law buffer into 20ms Twilio media frames (base64 payloads).
+  - Added `playProcessingChime()` and invoked it in `onUtteranceEnd` immediately before `respond()` so LLM response generation begins right after chime playback starts.
+  - Added guard to skip chime/response trigger when interruption state is active (`isSpeaking`/`speaking`) to preserve barge-in behavior.
+- Build verification: `npm run build` passed (TypeScript compile clean).
+
 ## 2026-03-02 (Auto owner SMS on call close; remove notify_owner tool)
 - Updated `src/websocket/handler.ts`:
   - Imported `sendSms` from `../twilio/service`.

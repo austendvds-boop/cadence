@@ -7,6 +7,88 @@ import { sendSms } from '../twilio/service';
 
 type TwilioMsg = { event: string; streamSid?: string; start?: any; media?: { payload: string } };
 
+const CHIME_FRAME_SAMPLES = 160; // 20ms @ 8kHz
+
+function encodePcm16ToMuLaw(sample: number): number {
+  const BIAS = 0x84;
+  const CLIP = 32635;
+  let pcm = Math.max(-1, Math.min(1, sample));
+  let pcm16 = Math.round(pcm * 32767);
+
+  let sign = 0;
+  if (pcm16 < 0) {
+    sign = 0x80;
+    pcm16 = -pcm16;
+  }
+
+  if (pcm16 > CLIP) pcm16 = CLIP;
+  pcm16 += BIAS;
+
+  let exponent = 7;
+  for (let expMask = 0x4000; (pcm16 & expMask) === 0 && exponent > 0; expMask >>= 1) {
+    exponent--;
+  }
+
+  const mantissa = (pcm16 >> (exponent + 3)) & 0x0f;
+  return (~(sign | (exponent << 4) | mantissa)) & 0xff;
+}
+
+function appendSineWithEnvelope(
+  out: number[],
+  freqHz: number,
+  durationMs: number,
+  sampleRate: number,
+  amplitude: number,
+  fadeInMs: number,
+  fadeOutMs: number
+) {
+  const totalSamples = Math.round((durationMs / 1000) * sampleRate);
+  const fadeInSamples = Math.max(1, Math.round((fadeInMs / 1000) * sampleRate));
+  const fadeOutSamples = Math.max(1, Math.round((fadeOutMs / 1000) * sampleRate));
+
+  for (let i = 0; i < totalSamples; i++) {
+    const t = i / sampleRate;
+    let env = 1;
+    if (i < fadeInSamples) env = i / fadeInSamples;
+    const samplesFromEnd = totalSamples - 1 - i;
+    if (samplesFromEnd < fadeOutSamples) env = Math.min(env, samplesFromEnd / fadeOutSamples);
+    out.push(Math.sin(2 * Math.PI * freqHz * t) * amplitude * Math.max(0, env));
+  }
+}
+
+function appendSilence(out: number[], durationMs: number, sampleRate: number) {
+  const silenceSamples = Math.round((durationMs / 1000) * sampleRate);
+  for (let i = 0; i < silenceSamples; i++) out.push(0);
+}
+
+function generateAscendingChimeFramesBase64(): string[] {
+  const sampleRate = 8000;
+  const amplitude = 0.25;
+  const fadeInMs = 10;
+  const fadeOutMs = 20;
+  const gapMs = 30;
+
+  const pcm: number[] = [];
+  appendSineWithEnvelope(pcm, 523, 120, sampleRate, amplitude, fadeInMs, fadeOutMs);
+  appendSilence(pcm, gapMs, sampleRate);
+  appendSineWithEnvelope(pcm, 659, 120, sampleRate, amplitude, fadeInMs, fadeOutMs);
+  appendSilence(pcm, gapMs, sampleRate);
+  appendSineWithEnvelope(pcm, 784, 150, sampleRate, amplitude, fadeInMs, fadeOutMs);
+
+  const floatPcm = Float32Array.from(pcm);
+  const muLaw = Buffer.alloc(floatPcm.length);
+  for (let i = 0; i < floatPcm.length; i++) muLaw[i] = encodePcm16ToMuLaw(floatPcm[i]);
+
+  const frames: string[] = [];
+  for (let offset = 0; offset < muLaw.length; offset += CHIME_FRAME_SAMPLES) {
+    frames.push(muLaw.subarray(offset, Math.min(offset + CHIME_FRAME_SAMPLES, muLaw.length)).toString('base64'));
+  }
+
+  return frames;
+}
+
+const ASCENDING_CHIME_FRAMES = generateAscendingChimeFramesBase64();
+
 export function handleTwilioMedia(ws: WebSocket) {
   let streamSid = '';
   let callSid = '';
@@ -28,6 +110,15 @@ export function handleTwilioMedia(ws: WebSocket) {
     activeTtsAbort = null;
     isSpeaking = false;
     speaking = false;
+  }
+
+  function playProcessingChime() {
+    if (!streamSid) return;
+    ASCENDING_CHIME_FRAMES.forEach((payload, index) => {
+      setTimeout(() => {
+        ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
+      }, index * 20);
+    });
   }
 
   async function speakText(text: string) {
@@ -69,11 +160,13 @@ export function handleTwilioMedia(ws: WebSocket) {
       try {
         if (introPlaying) return;
         if (responding) return;
+        if (isSpeaking || speaking) return;
         const utterance = finalParts.join(' ').trim();
         finalParts = [];
         if (!utterance) return;
-        logger.info({ utterance }, 'utterance end — calling LLM');
+        logger.info({ utterance }, 'utterance end — play chime and call LLM');
         history.push({ role: 'user', content: utterance });
+        playProcessingChime();
         responding = true;
         await respond();
         responding = false;
