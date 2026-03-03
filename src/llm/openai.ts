@@ -100,6 +100,16 @@ export async function runAgent(messages: ChatMsg[]) {
   return response.choices[0]?.message;
 }
 
+export async function warmLlmConnection(): Promise<void> {
+  if (!llmClient) return;
+  await llmClient.chat.completions.create({
+    model: LLM_MODEL,
+    temperature: 0,
+    max_completion_tokens: 1,
+    messages: [{ role: 'user', content: 'ping' }] as any,
+  });
+}
+
 export async function runAgentStream(messages: ChatMsg[], onToken: (token: string) => void, signal?: AbortSignal) {
   if (!llmClient) throw new Error('Missing OPENAI_API_KEY or GROQ_API_KEY');
 

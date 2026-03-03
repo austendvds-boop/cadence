@@ -17,7 +17,18 @@ export function createDeepgramBridge(cb: SttCallbacks) {
     punctuate: true, smart_format: true, interim_results: true, utterance_end_ms: 500, endpointing: 300, vad_events: true, keep_alive: true,
   });
 
-  conn.on(LiveTranscriptionEvents.Open, () => logger.info('Deepgram connected'));
+  let ready = false;
+  let resolveReady: (() => void) | null = null;
+  const readyPromise = new Promise<void>((resolve) => {
+    resolveReady = resolve;
+  });
+
+  conn.on(LiveTranscriptionEvents.Open, () => {
+    ready = true;
+    logger.info('Deepgram connected');
+    resolveReady?.();
+    resolveReady = null;
+  });
   conn.on(LiveTranscriptionEvents.Transcript, (d: any) => {
     const text = d.channel?.alternatives?.[0]?.transcript?.trim();
     if (!text) return;
@@ -29,7 +40,13 @@ export function createDeepgramBridge(cb: SttCallbacks) {
 
   return {
     sendMulaw: (audio: Buffer) => (conn as any).send(audio as any),
+    waitUntilReady: async (timeoutMs = 3000) => {
+      if (ready) return;
+      await Promise.race([
+        readyPromise,
+        new Promise<void>((_, reject) => setTimeout(() => reject(new Error(`Deepgram STT did not open within ${timeoutMs}ms`)), timeoutMs)),
+      ]);
+    },
     close: () => conn.requestClose(),
   };
 }
-

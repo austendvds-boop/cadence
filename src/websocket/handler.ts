@@ -1,7 +1,7 @@
 import { WebSocket } from 'ws';
 import { logger } from '../utils/logger';
 import { createDeepgramBridge } from '../stt/deepgram';
-import { runAgentStream, streamDeepgramTTS, type ChatMsg, DeepgramTtsConnection } from '../llm/openai';
+import { runAgentStream, streamDeepgramTTS, type ChatMsg, DeepgramTtsConnection, warmLlmConnection } from '../llm/openai';
 import { executeTool } from '../tools/executor';
 import { sendSms } from '../twilio/service';
 
@@ -217,6 +217,65 @@ function transcriptSimilarity(a: string, b: string): number {
   return Math.max(0, 1 - distance / maxLen);
 }
 
+type CachedResponse = {
+  question: string;
+  answer: string;
+};
+
+const PRESEEDED_TOP_QA: CachedResponse[] = [
+  {
+    question: 'how much is the license ready package',
+    answer: 'Our most popular License-Ready Package is six eighty and includes four lessons, ten hours total, and road test waiver eligibility. Would you like me to help you choose dates that fit your schedule?'
+  },
+  {
+    question: 'what packages do you offer',
+    answer: 'Most families choose the License-Ready Package at six eighty with ten total driving hours, and we also offer smaller and larger options depending on goals. Are you looking for the fastest path to a license or more practice time?'
+  },
+  {
+    question: 'what cities do you serve',
+    answer: 'We serve twenty five plus cities across greater Phoenix, including Phoenix, Glendale, Scottsdale, Mesa, Tempe, Chandler, Gilbert, and nearby areas. What city are you in so I can confirm coverage for your address?'
+  },
+  {
+    question: 'do you pick up students',
+    answer: 'Yes, lessons are one on one and instructors pick students up at their address in our service area. What area should I check for you?'
+  },
+  {
+    question: 'how old do you have to be to start',
+    answer: 'Students can start at fifteen and a half, and there is no maximum age. Is the student already at least fifteen and a half, or are you planning ahead?'
+  },
+  {
+    question: 'do you offer the road test waiver',
+    answer: 'Yes, completing a qualifying package makes students eligible for the Arizona road test waiver so they can skip the MVD driving test. Do you want help picking the best package for that goal?'
+  },
+  {
+    question: 'how do i book',
+    answer: 'Booking is online at www dot deervalleydrivingschool dot com where you pick your region, choose dates, and check out. Want me to walk you through which package to select first?'
+  }
+];
+
+const responseCache = new Map<string, string>();
+for (const pair of PRESEEDED_TOP_QA) {
+  responseCache.set(normalizeTranscript(pair.question), pair.answer);
+}
+
+function lookupCachedResponse(utterance: string): { response: string; similarity: number; key: string } | null {
+  const normalized = normalizeTranscript(utterance);
+  if (!normalized) return null;
+
+  const exact = responseCache.get(normalized);
+  if (exact) return { response: exact, similarity: 1, key: normalized };
+
+  let best: { response: string; similarity: number; key: string } | null = null;
+  for (const [key, value] of responseCache.entries()) {
+    const similarity = transcriptSimilarity(normalized, key);
+    if (similarity >= 0.95 && (!best || similarity > best.similarity)) {
+      best = { response: value, similarity, key };
+    }
+  }
+
+  return best;
+}
+
 type SpeculativeRun = {
   input: string;
   cancel: () => void;
@@ -384,6 +443,16 @@ export function handleTwilioMedia(ws: WebSocket) {
           }
         }
 
+        const cached = lookupCachedResponse(utterance);
+        if (cached) {
+          logger.info({ utterance, matchedKey: cached.key, similarity: cached.similarity }, 'utterance end — using cached response');
+          history.push({ role: 'user', content: utterance });
+          history.push({ role: 'assistant', content: cached.response });
+          await speakText(cached.response);
+          clearSpeculativeRun();
+          return;
+        }
+
         logger.info({ utterance }, 'utterance end — calling LLM');
         history.push({ role: 'user', content: utterance });
         responding = true;
@@ -463,6 +532,12 @@ export function handleTwilioMedia(ws: WebSocket) {
 
       const text = msg.content || tokenBuffer.join('').trim() || 'Sorry, I had trouble with that. Let me connect you with Austen.';
       history.push({ role: 'assistant', content: text });
+
+      const lastUserMessage = [...history].reverse().find((m) => m.role === 'user' && typeof m.content === 'string')?.content;
+      const normalizedUser = normalizeTranscript(lastUserMessage || '');
+      if (normalizedUser && !msg.tool_calls?.length && text.trim()) {
+        responseCache.set(normalizedUser, text.trim());
+      }
     } catch (err) {
       cancelSpeculativeRun();
       logger.error({ err }, 'respond() error');
@@ -492,7 +567,12 @@ export function handleTwilioMedia(ws: WebSocket) {
         logger.info({ streamSid, callSid, callerNumber }, 'Twilio stream started');
 
         ttsConnection = new DeepgramTtsConnection();
-        await ttsConnection.warm();
+        await Promise.all([
+          dg.waitUntilReady(3500),
+          ttsConnection.warm(),
+        ]);
+
+        warmLlmConnection().catch((err) => logger.warn({ err }, 'LLM pre-warm failed'));
 
         const greeting = "Hi, thanks for calling Deer Valley Driving School! This is Cadence, how can I help you today?";
         history.push({ role: 'assistant', content: greeting });

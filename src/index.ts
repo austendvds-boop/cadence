@@ -38,5 +38,6 @@ wss.on('connection', (ws) => {
 });
 
 server.listen(env.PORT, () => {
-  logger.info(`Cadence listening on :${env.PORT}`);
+  const deploymentRegion = env.RENDER_REGION || env.RAILWAY_REGION || env.FLY_REGION || 'unknown';
+  logger.info({ port: env.PORT, deploymentRegion }, 'Cadence listening');
 });
