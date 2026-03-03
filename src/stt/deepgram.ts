@@ -14,7 +14,7 @@ export function createDeepgramBridge(cb: SttCallbacks) {
   const dg = createClient(env.DEEPGRAM_API_KEY);
   const conn = dg.listen.live({
     model: 'nova-2', language: 'en-US', encoding: 'mulaw', sample_rate: 8000, channels: 1,
-    punctuate: true, smart_format: true, interim_results: true, utterance_end_ms: 500, endpointing: 300, vad_events: true, keep_alive: true,
+    punctuate: true, smart_format: true, interim_results: true, utterance_end_ms: 500, endpointing: 300, vad_events: true,
   });
 
   let ready = false;
@@ -41,11 +41,18 @@ export function createDeepgramBridge(cb: SttCallbacks) {
   return {
     sendMulaw: (audio: Buffer) => (conn as any).send(audio as any),
     waitUntilReady: async (timeoutMs = 3000) => {
-      if (ready) return;
-      await Promise.race([
-        readyPromise,
-        new Promise<void>((_, reject) => setTimeout(() => reject(new Error(`Deepgram STT did not open within ${timeoutMs}ms`)), timeoutMs)),
-      ]);
+      if (ready) return true;
+      try {
+        const opened = await Promise.race([
+          readyPromise.then(() => true),
+          new Promise<boolean>((resolve) => setTimeout(() => resolve(false), timeoutMs)),
+        ]);
+        if (!opened) logger.warn({ timeoutMs }, 'Deepgram STT did not open in time; continuing without readiness guarantee');
+        return opened;
+      } catch (err) {
+        logger.warn({ err }, 'Deepgram STT pre-warm failed; continuing without readiness guarantee');
+        return false;
+      }
     },
     close: () => conn.requestClose(),
   };

@@ -568,7 +568,9 @@ export function handleTwilioMedia(ws: WebSocket) {
 
         ttsConnection = new DeepgramTtsConnection();
         await Promise.all([
-          dg.waitUntilReady(3500),
+          dg.waitUntilReady(3500).catch((err) => {
+            logger.warn({ err }, 'STT pre-warm failed; continuing call startup');
+          }),
           ttsConnection.warm(),
         ]);
 
