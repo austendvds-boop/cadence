@@ -1,7 +1,7 @@
 import { WebSocket } from 'ws';
 import { logger } from '../utils/logger';
 import { createDeepgramBridge } from '../stt/deepgram';
-import { runAgentStream, streamDeepgramTTS, type ChatMsg, DeepgramTtsConnection, warmLlmConnection } from '../llm/openai';
+import { runAgentStream, streamDeepgramTTS, type ChatMsg, DeepgramTtsConnection } from '../llm/openai';
 import { executeTool } from '../tools/executor';
 import { sendSms } from '../twilio/service';
 
@@ -608,14 +608,9 @@ export function handleTwilioMedia(ws: WebSocket) {
         }, 10 * 60 * 1000);
 
         ttsConnection = new DeepgramTtsConnection();
-        await Promise.all([
-          dg.waitUntilReady(3500).catch((err) => {
-            logger.warn({ err }, 'STT pre-warm failed; continuing call startup');
-          }),
-          ttsConnection.warm(),
-        ]);
-
-        warmLlmConnection().catch((err) => logger.warn({ err }, 'LLM pre-warm failed'));
+        await ttsConnection.warm().catch((err) => {
+          logger.warn({ err }, 'TTS pre-warm failed; continuing call startup');
+        });
 
         const greeting = "Hi, thanks for calling Deer Valley Driving School! This is Cadence, how can I help you today?";
         history.push({ role: 'assistant', content: greeting });

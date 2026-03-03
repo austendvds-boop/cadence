@@ -37,6 +37,11 @@ export class DeepgramTtsConnection {
     await this.getSocket();
   }
 
+  getOpenSocket(): WebSocket | null {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) return this.ws;
+    return null;
+  }
+
   async getSocket(): Promise<WebSocket> {
     if (this.destroyed) throw new Error('TTS connection has been closed');
     if (this.ws && this.ws.readyState === WebSocket.OPEN) return this.ws;
@@ -233,6 +238,7 @@ export async function streamDeepgramTTS(
   let gotAudio = false;
 
   let ws: WebSocket | null = null;
+  let usingPersistentSocket = false;
 
   const connectEphemeral = async () => {
     return new Promise<WebSocket>((resolve, reject) => {
@@ -257,7 +263,9 @@ export async function streamDeepgramTTS(
   };
 
   try {
-    ws = persistentConnection ? await persistentConnection.getSocket() : await connectEphemeral();
+    const prewarmedSocket = persistentConnection?.getOpenSocket() ?? null;
+    usingPersistentSocket = Boolean(prewarmedSocket);
+    ws = prewarmedSocket ?? await connectEphemeral();
 
     ws.removeAllListeners('message');
     ws.on('message', (data, isBinary) => {
@@ -271,7 +279,7 @@ export async function streamDeepgramTTS(
       if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
 
       const ensureSocket = async () => {
-        if (persistentConnection) {
+        if (usingPersistentSocket && persistentConnection) {
           ws = await persistentConnection.getSocket();
         }
         if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -285,7 +293,7 @@ export async function streamDeepgramTTS(
       try {
         socket.send(JSON.stringify(payload));
       } catch {
-        if (!persistentConnection) throw new Error('Deepgram websocket not open');
+        if (!usingPersistentSocket || !persistentConnection) throw new Error('Deepgram websocket not open');
         ws = await persistentConnection.getSocket();
         if (!ws || ws.readyState !== WebSocket.OPEN) throw new Error('Deepgram websocket not open');
         ws.send(JSON.stringify(payload));
@@ -312,7 +320,7 @@ export async function streamDeepgramTTS(
     }
     await sendJson({ type: 'Flush' });
 
-    if (!persistentConnection) {
+    if (!usingPersistentSocket) {
       await sendJson({ type: 'Close' });
       await new Promise<void>((resolve) => {
         if (!ws) return resolve();
@@ -331,11 +339,11 @@ export async function streamDeepgramTTS(
     }
   } catch (err: any) {
     if (err?.name === 'AbortError') {
-      if (!persistentConnection) ws?.close();
+      if (!usingPersistentSocket) ws?.close();
       throw err;
     }
 
-    if (!persistentConnection) ws?.close();
+    if (!usingPersistentSocket) ws?.close();
 
     if (!gotAudio) {
       const fallback = fullText.trim();
