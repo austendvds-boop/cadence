@@ -13,10 +13,6 @@
   "license": "MIT",
   "dependencies": {
     "@deepgram/sdk": "^4.11.3",
-    "alawmulaw": "^6.0.0",
-    "axios": "^1.12.2",
-    "date-fns": "^4.1.0",
-    "date-fns-tz": "^3.2.0",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "openai": "^6.7.0",

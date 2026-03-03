@@ -253,29 +253,6 @@ const PRESEEDED_TOP_QA: CachedResponse[] = [
   }
 ];
 
-const responseCache = new Map<string, string>();
-for (const pair of PRESEEDED_TOP_QA) {
-  responseCache.set(normalizeTranscript(pair.question), pair.answer);
-}
-
-function lookupCachedResponse(utterance: string): { response: string; similarity: number; key: string } | null {
-  const normalized = normalizeTranscript(utterance);
-  if (!normalized) return null;
-
-  const exact = responseCache.get(normalized);
-  if (exact) return { response: exact, similarity: 1, key: normalized };
-
-  let best: { response: string; similarity: number; key: string } | null = null;
-  for (const [key, value] of responseCache.entries()) {
-    const similarity = transcriptSimilarity(normalized, key);
-    if (similarity >= 0.95 && (!best || similarity > best.similarity)) {
-      best = { response: value, similarity, key };
-    }
-  }
-
-  return best;
-}
-
 type SpeculativeRun = {
   input: string;
   cancel: () => void;
@@ -318,24 +295,64 @@ export function handleTwilioMedia(ws: WebSocket) {
   let callSid = '';
   let callerNumber = '';
   let finalParts: string[] = [];
-  let speaking = false;
   let isSpeaking = false;
   let introPlaying = false;
   let introTimer: ReturnType<typeof setTimeout> | null = null;
+  let callTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
   let responding = false;
   let activeTtsAbort: AbortController | null = null;
   let ttsConnection: DeepgramTtsConnection | null = null;
   let speculativeRun: SpeculativeRun | null = null;
   const history: ChatMsg[] = [];
+  const responseCache = new Map<string, string>();
+  const RESPONSE_CACHE_MAX = 100;
 
-  function clearSpeculativeRun() {
-    speculativeRun = null;
+  for (const pair of PRESEEDED_TOP_QA) {
+    responseCache.set(normalizeTranscript(pair.question), pair.answer);
+  }
+
+  function lookupCachedResponse(utterance: string): { response: string; similarity: number; key: string } | null {
+    const normalized = normalizeTranscript(utterance);
+    if (!normalized) return null;
+
+    const exact = responseCache.get(normalized);
+    if (exact) return { response: exact, similarity: 1, key: normalized };
+
+    let best: { response: string; similarity: number; key: string } | null = null;
+    for (const [key, value] of responseCache.entries()) {
+      const similarity = transcriptSimilarity(normalized, key);
+      if (similarity >= 0.95 && (!best || similarity > best.similarity)) {
+        best = { response: value, similarity, key };
+      }
+    }
+
+    return best;
+  }
+
+  function cacheResponse(question: string, answer: string) {
+    if (!question || !answer) return;
+    const normalized = normalizeTranscript(question);
+    if (!normalized) return;
+
+    if (responseCache.has(normalized)) responseCache.delete(normalized);
+    responseCache.set(normalized, answer.trim());
+
+    while (responseCache.size > RESPONSE_CACHE_MAX) {
+      const oldestKey = responseCache.keys().next().value;
+      if (!oldestKey) break;
+      responseCache.delete(oldestKey);
+    }
   }
 
   function cancelSpeculativeRun() {
     if (!speculativeRun) return;
     speculativeRun.cancel();
     speculativeRun = null;
+  }
+
+  function resetSpeechFlags() {
+    isSpeaking = false;
+    introPlaying = false;
   }
 
   function bargeIn(reason: 'interim_transcript' | 'final_transcript') {
@@ -348,7 +365,7 @@ export function handleTwilioMedia(ws: WebSocket) {
     ttsConnection = new DeepgramTtsConnection();
     ttsConnection.warm().catch((err) => logger.warn({ err }, 'failed to rewarm TTS after barge-in'));
     isSpeaking = false;
-    speaking = false;
+    finalParts = [];
   }
 
   async function speakFromStream(textStream: AsyncIterable<string>) {
@@ -361,12 +378,9 @@ export function handleTwilioMedia(ws: WebSocket) {
       await streamDeepgramTTS(
         textStream,
         (payload) => {
-          if (controller.signal.aborted) return;
-          if (!isSpeaking) {
-            isSpeaking = true;
-            speaking = true;
-          }
-          if (!isSpeaking || !speaking) return;
+          if (controller.signal.aborted || !streamSid) return;
+          if (!isSpeaking) isSpeaking = true;
+          if (!isSpeaking) return;
           ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
         },
         controller.signal,
@@ -378,7 +392,6 @@ export function handleTwilioMedia(ws: WebSocket) {
       controller.abort();
       if (activeTtsAbort === controller) activeTtsAbort = null;
       isSpeaking = false;
-      speaking = false;
     }
   }
 
@@ -398,19 +411,20 @@ export function handleTwilioMedia(ws: WebSocket) {
         return;
       }
 
-      if (!isSpeaking && !speaking && !responding && !speculativeRun && wordCount >= 6) {
+      if (!isSpeaking && !responding && !speculativeRun && wordCount >= 6) {
         const speculativeInput = finalParts.length ? `${finalParts.join(' ')} ${text}` : text;
         logger.debug({ transcript: speculativeInput }, 'starting speculative LLM run from interim transcript');
         speculativeRun = createSpeculativeRun([...history, { role: 'user', content: speculativeInput }], speculativeInput);
-        speculativeRun.messagePromise.catch((err: any) => {
+        const runRef = speculativeRun;
+        runRef.messagePromise.catch((err: any) => {
           if (err?.name !== 'AbortError') logger.warn({ err }, 'speculative LLM run failed');
-          clearSpeculativeRun();
+          if (speculativeRun === runRef) speculativeRun = null;
         });
       }
     },
     onFinal: (t) => {
       if (!t.trim()) return;
-      if (isSpeaking || speaking || introPlaying) {
+      if (isSpeaking || introPlaying) {
         const wordCount = t.trim().split(/\s+/).filter(Boolean).length;
         if (wordCount >= 3) {
           bargeIn('final_transcript');
@@ -423,10 +437,11 @@ export function handleTwilioMedia(ws: WebSocket) {
       finalParts.push(t);
     },
     onUtteranceEnd: async () => {
+      if (introPlaying || isSpeaking) return;
+      if (responding) return;
+      responding = true;
+
       try {
-        if (introPlaying) return;
-        if (responding) return;
-        if (isSpeaking || speaking) return;
         const utterance = finalParts.join(' ').trim();
         finalParts = [];
         if (!utterance) return;
@@ -449,13 +464,12 @@ export function handleTwilioMedia(ws: WebSocket) {
           history.push({ role: 'user', content: utterance });
           history.push({ role: 'assistant', content: cached.response });
           await speakText(cached.response);
-          clearSpeculativeRun();
+          cancelSpeculativeRun();
           return;
         }
 
         logger.info({ utterance }, 'utterance end — calling LLM');
         history.push({ role: 'user', content: utterance });
-        responding = true;
 
         if (!ttsConnection) {
           ttsConnection = new DeepgramTtsConnection();
@@ -463,12 +477,12 @@ export function handleTwilioMedia(ws: WebSocket) {
         ttsConnection.warm().catch((err) => logger.warn({ err }, 'pre-warm TTS websocket failed'));
 
         await respond(0, matchedSpeculativeRun ?? undefined);
-        if (matchedSpeculativeRun) clearSpeculativeRun();
-        responding = false;
+        if (matchedSpeculativeRun) cancelSpeculativeRun();
       } catch (err) {
-        responding = false;
         cancelSpeculativeRun();
         logger.error({ err }, 'onUtteranceEnd error');
+      } finally {
+        responding = false;
       }
     },
     onSpeechStarted: () => {}
@@ -509,10 +523,25 @@ export function handleTwilioMedia(ws: WebSocket) {
       if (!msg) return;
 
       if (msg.tool_calls?.length) {
+        cancelSpeculativeRun();
         history.push({ role: 'assistant', content: msg.content ?? null, tool_calls: msg.tool_calls } as any);
         for (const c of msg.tool_calls as any[]) {
           if (c.type !== 'function' || !c.function) continue;
-          const args = JSON.parse(c.function.arguments || '{}');
+
+          let args: any;
+          try {
+            args = JSON.parse(c.function.arguments || '{}');
+          } catch (parseErr) {
+            logger.warn({ err: parseErr, tool: c.function.name, rawArgs: c.function.arguments }, 'malformed tool arguments; skipping tool call');
+            history.push({
+              role: 'tool',
+              name: c.function.name,
+              tool_call_id: c.id,
+              content: JSON.stringify({ error: 'Invalid tool arguments' })
+            });
+            continue;
+          }
+
           logger.info({ tool: c.function.name, args }, 'tool call');
           try {
             const result = await executeTool(c.function.name, args, { callSid, callerNumber });
@@ -534,9 +563,8 @@ export function handleTwilioMedia(ws: WebSocket) {
       history.push({ role: 'assistant', content: text });
 
       const lastUserMessage = [...history].reverse().find((m) => m.role === 'user' && typeof m.content === 'string')?.content;
-      const normalizedUser = normalizeTranscript(lastUserMessage || '');
-      if (normalizedUser && !msg.tool_calls?.length && text.trim()) {
-        responseCache.set(normalizedUser, text.trim());
+      if (lastUserMessage && text.trim()) {
+        cacheResponse(lastUserMessage, text);
       }
     } catch (err) {
       cancelSpeculativeRun();
@@ -551,7 +579,14 @@ export function handleTwilioMedia(ws: WebSocket) {
   }
 
   ws.on('message', async (raw) => {
-    const msg = JSON.parse(raw.toString()) as TwilioMsg;
+    let msg: TwilioMsg;
+    try {
+      msg = JSON.parse(raw.toString()) as TwilioMsg;
+    } catch (err) {
+      logger.warn({ err, raw: raw.toString() }, 'failed to parse Twilio websocket message');
+      return;
+    }
+
     if (msg.event === 'start') {
       try {
         streamSid = msg.start?.streamSid;
@@ -565,6 +600,12 @@ export function handleTwilioMedia(ws: WebSocket) {
           } as any);
         }
         logger.info({ streamSid, callSid, callerNumber }, 'Twilio stream started');
+
+        if (callTimeoutTimer) clearTimeout(callTimeoutTimer);
+        callTimeoutTimer = setTimeout(() => {
+          logger.warn({ callSid, streamSid }, 'call exceeded maximum duration; hanging up');
+          ws.close(1000, 'call timeout');
+        }, 10 * 60 * 1000);
 
         ttsConnection = new DeepgramTtsConnection();
         await Promise.all([
@@ -580,25 +621,33 @@ export function handleTwilioMedia(ws: WebSocket) {
         history.push({ role: 'assistant', content: greeting });
 
         introPlaying = true;
-        speaking = true;
         isSpeaking = true;
         const streamStart = Date.now();
         let chunkCount = 0;
-        await streamDeepgramTTS(
-          oneChunkStream(greeting),
-          (payload) => {
-            if (!introPlaying) return;
-            ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
-            chunkCount++;
-          },
-          undefined,
-          ttsConnection
-        );
+
+        try {
+          await streamDeepgramTTS(
+            oneChunkStream(greeting),
+            (payload) => {
+              if (!introPlaying) return;
+              ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
+              chunkCount++;
+            },
+            undefined,
+            ttsConnection
+          );
+        } catch (greetingErr) {
+          logger.error({ err: greetingErr }, 'greeting stream failed');
+          throw greetingErr;
+        } finally {
+          isSpeaking = false;
+        }
+
         const streamDuration = Date.now() - streamStart;
         const remainingPlayback = Math.max(chunkCount * 20 - streamDuration + 800, 800);
         logger.info({ chunks: chunkCount, streamDurationMs: streamDuration, remainingPlayback }, 'greeting sent');
-        speaking = false;
-        await new Promise<void>(r => {
+
+        await new Promise<void>((r) => {
           introTimer = setTimeout(() => {
             introPlaying = false;
             isSpeaking = false;
@@ -609,13 +658,19 @@ export function handleTwilioMedia(ws: WebSocket) {
         });
       } catch (err) {
         logger.error({ err }, 'start event error');
+        resetSpeechFlags();
         ws.close();
+      } finally {
+        isSpeaking = false;
       }
     }
+
     if (msg.event === 'media' && msg.media?.payload) {
-      dg.sendMulaw(Buffer.from(msg.media.payload, 'base64'));
-      logger.debug('incoming audio packet');
+      if (!isSpeaking) {
+        dg.sendMulaw(Buffer.from(msg.media.payload, 'base64'));
+      }
     }
+
     if (msg.event === 'stop') {
       activeTtsAbort?.abort();
       cancelSpeculativeRun();
@@ -626,10 +681,20 @@ export function handleTwilioMedia(ws: WebSocket) {
   });
 
   ws.on('close', async () => {
+    if (introTimer) {
+      clearTimeout(introTimer);
+      introTimer = null;
+    }
+    if (callTimeoutTimer) {
+      clearTimeout(callTimeoutTimer);
+      callTimeoutTimer = null;
+    }
+
     activeTtsAbort?.abort();
     cancelSpeculativeRun();
     ttsConnection?.close();
     dg.close();
+    resetSpeechFlags();
 
     const userMessages = history
       .filter((m) => m.role === 'user')

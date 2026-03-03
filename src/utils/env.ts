@@ -10,8 +10,6 @@ const EnvSchema = z.object({
   GROQ_API_KEY: z.string().optional(),
   GROQ_MODEL: z.string().default('llama-3.3-70b-specdec'),
   OPENAI_MODEL: z.string().default('gpt-4o-mini'),
-  OPENAI_TTS_MODEL: z.string().default('tts-1'),
-  OPENAI_TTS_VOICE: z.string().default('alloy'),
   DEEPGRAM_API_KEY: z.string().optional(),
   TWILIO_ACCOUNT_SID: z.string().optional(),
   TWILIO_AUTH_TOKEN: z.string().optional(),
@@ -22,10 +20,6 @@ const EnvSchema = z.object({
   RAILWAY_REGION: z.string().optional(),
   FLY_REGION: z.string().optional(),
   AUSTEN_CELL_NUMBER: z.string().optional(),
-  ACUITY_MINE_USER: z.string().optional(),
-  ACUITY_MINE_KEY: z.string().optional(),
-  ACUITY_PARENTS_USER: z.string().optional(),
-  ACUITY_PARENTS_KEY: z.string().optional(),
   LOG_LEVEL: z.string().default('info'),
 });
 
