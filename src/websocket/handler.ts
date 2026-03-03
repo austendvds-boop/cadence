@@ -172,6 +172,88 @@ function createAsyncTextQueue() {
   };
 }
 
+function normalizeTranscript(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function levenshteinDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+
+  const prev = new Array<number>(b.length + 1);
+  const curr = new Array<number>(b.length + 1);
+
+  for (let j = 0; j <= b.length; j += 1) prev[j] = j;
+
+  for (let i = 1; i <= a.length; i += 1) {
+    curr[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(
+        prev[j] + 1,
+        curr[j - 1] + 1,
+        prev[j - 1] + cost,
+      );
+    }
+    for (let j = 0; j <= b.length; j += 1) prev[j] = curr[j];
+  }
+
+  return prev[b.length];
+}
+
+function transcriptSimilarity(a: string, b: string): number {
+  const normA = normalizeTranscript(a);
+  const normB = normalizeTranscript(b);
+  if (!normA && !normB) return 1;
+  if (!normA || !normB) return 0;
+  const maxLen = Math.max(normA.length, normB.length);
+  if (!maxLen) return 1;
+  const distance = levenshteinDistance(normA, normB);
+  return Math.max(0, 1 - distance / maxLen);
+}
+
+type SpeculativeRun = {
+  input: string;
+  cancel: () => void;
+  attach: (onToken: (token: string) => void) => void;
+  messagePromise: Promise<any>;
+};
+
+function createSpeculativeRun(messages: ChatMsg[], input: string): SpeculativeRun {
+  const controller = new AbortController();
+  const bufferedTokens: string[] = [];
+  let sink: ((token: string) => void) | null = null;
+
+  const messagePromise = runAgentStream(
+    messages,
+    (token) => {
+      if (sink) {
+        sink(token);
+      } else {
+        bufferedTokens.push(token);
+      }
+    },
+    controller.signal
+  );
+
+  return {
+    input,
+    cancel: () => controller.abort(),
+    attach: (onToken) => {
+      sink = onToken;
+      while (bufferedTokens.length > 0) {
+        onToken(bufferedTokens.shift() as string);
+      }
+    },
+    messagePromise,
+  };
+}
+
 export function handleTwilioMedia(ws: WebSocket) {
   let streamSid = '';
   let callSid = '';
@@ -184,14 +266,28 @@ export function handleTwilioMedia(ws: WebSocket) {
   let responding = false;
   let activeTtsAbort: AbortController | null = null;
   let ttsConnection: DeepgramTtsConnection | null = null;
+  let speculativeRun: SpeculativeRun | null = null;
   const history: ChatMsg[] = [];
 
-  function bargeIn(reason: 'final_transcript') {
+  function clearSpeculativeRun() {
+    speculativeRun = null;
+  }
+
+  function cancelSpeculativeRun() {
+    if (!speculativeRun) return;
+    speculativeRun.cancel();
+    speculativeRun = null;
+  }
+
+  function bargeIn(reason: 'interim_transcript' | 'final_transcript') {
     if (!isSpeaking || introPlaying) return;
     logger.info({ reason }, 'barge-in: clearing outbound audio');
     ws.send(JSON.stringify({ event: 'clear', streamSid }));
     activeTtsAbort?.abort();
     activeTtsAbort = null;
+    ttsConnection?.close();
+    ttsConnection = new DeepgramTtsConnection();
+    ttsConnection.warm().catch((err) => logger.warn({ err }, 'failed to rewarm TTS after barge-in'));
     isSpeaking = false;
     speaking = false;
   }
@@ -232,12 +328,37 @@ export function handleTwilioMedia(ws: WebSocket) {
   }
 
   const dg = createDeepgramBridge({
-    onInterim: () => {},
+    onInterim: (t) => {
+      const text = t.trim();
+      if (!text || introPlaying) return;
+
+      const wordCount = text.split(/\s+/).filter(Boolean).length;
+      if (isSpeaking && wordCount >= 3) {
+        logger.info({ transcript: text }, 'interim barge-in detected');
+        bargeIn('interim_transcript');
+        return;
+      }
+
+      if (!isSpeaking && !speaking && !responding && !speculativeRun && wordCount >= 6) {
+        const speculativeInput = finalParts.length ? `${finalParts.join(' ')} ${text}` : text;
+        logger.debug({ transcript: speculativeInput }, 'starting speculative LLM run from interim transcript');
+        speculativeRun = createSpeculativeRun([...history, { role: 'user', content: speculativeInput }], speculativeInput);
+        speculativeRun.messagePromise.catch((err: any) => {
+          if (err?.name !== 'AbortError') logger.warn({ err }, 'speculative LLM run failed');
+          clearSpeculativeRun();
+        });
+      }
+    },
     onFinal: (t) => {
       if (!t.trim()) return;
       if (isSpeaking || speaking || introPlaying) {
-        logger.debug({ transcript: t }, 'Ignoring STT final while Cadence is speaking');
-        return;
+        const wordCount = t.trim().split(/\s+/).filter(Boolean).length;
+        if (wordCount >= 3) {
+          bargeIn('final_transcript');
+        } else {
+          logger.debug({ transcript: t }, 'Ignoring short STT final while Cadence is speaking');
+          return;
+        }
       }
       logger.info({ transcript: t }, 'STT final');
       finalParts.push(t);
@@ -250,6 +371,19 @@ export function handleTwilioMedia(ws: WebSocket) {
         const utterance = finalParts.join(' ').trim();
         finalParts = [];
         if (!utterance) return;
+
+        let matchedSpeculativeRun: SpeculativeRun | null = null;
+        if (speculativeRun) {
+          const similarity = transcriptSimilarity(speculativeRun.input, utterance);
+          if (similarity >= 0.8) {
+            matchedSpeculativeRun = speculativeRun;
+            logger.info({ utterance, speculativeInput: speculativeRun.input, similarity }, 'reusing speculative LLM stream');
+          } else {
+            logger.info({ utterance, speculativeInput: speculativeRun.input, similarity }, 'speculative LLM diverged; restarting with final transcript');
+            cancelSpeculativeRun();
+          }
+        }
+
         logger.info({ utterance }, 'utterance end — calling LLM');
         history.push({ role: 'user', content: utterance });
         responding = true;
@@ -259,17 +393,19 @@ export function handleTwilioMedia(ws: WebSocket) {
         }
         ttsConnection.warm().catch((err) => logger.warn({ err }, 'pre-warm TTS websocket failed'));
 
-        await respond();
+        await respond(0, matchedSpeculativeRun ?? undefined);
+        if (matchedSpeculativeRun) clearSpeculativeRun();
         responding = false;
       } catch (err) {
         responding = false;
+        cancelSpeculativeRun();
         logger.error({ err }, 'onUtteranceEnd error');
       }
     },
     onSpeechStarted: () => {}
   });
 
-  async function respond(depth = 0) {
+  async function respond(depth = 0, precomputedRun?: SpeculativeRun) {
     try {
       if (depth > 5) {
         await speakText("I'm having some trouble right now. Let me connect you with Austen.");
@@ -281,12 +417,24 @@ export function handleTwilioMedia(ws: WebSocket) {
       const tokenBuffer: string[] = [];
 
       const ttsTask = speakFromStream(tokenQueue.iterable);
-      const msg = await runAgentStream(history, (token) => {
+
+      const onToken = (token: string) => {
         tokenBuffer.push(token);
         tokenQueue.push(token);
-      });
-      tokenQueue.close();
-      await ttsTask;
+      };
+
+      let msg: any;
+      try {
+        msg = precomputedRun
+          ? await (async () => {
+              precomputedRun.attach(onToken);
+              return precomputedRun.messagePromise;
+            })()
+          : await runAgentStream(history, onToken);
+      } finally {
+        tokenQueue.close();
+        await ttsTask;
+      }
 
       logger.info({ hasToolCalls: !!(msg?.tool_calls?.length), content: tokenBuffer.join('').slice(0, 80) }, 'LLM response');
       if (!msg) return;
@@ -316,6 +464,7 @@ export function handleTwilioMedia(ws: WebSocket) {
       const text = msg.content || tokenBuffer.join('').trim() || 'Sorry, I had trouble with that. Let me connect you with Austen.';
       history.push({ role: 'assistant', content: text });
     } catch (err) {
+      cancelSpeculativeRun();
       logger.error({ err }, 'respond() error');
       try {
         await speakText('Sorry, I ran into a technical issue. Let me connect you with someone who can help.');
@@ -382,13 +531,12 @@ export function handleTwilioMedia(ws: WebSocket) {
       }
     }
     if (msg.event === 'media' && msg.media?.payload) {
-      if (!isSpeaking && !speaking && !introPlaying) {
-        dg.sendMulaw(Buffer.from(msg.media.payload, 'base64'));
-      }
+      dg.sendMulaw(Buffer.from(msg.media.payload, 'base64'));
       logger.debug('incoming audio packet');
     }
     if (msg.event === 'stop') {
       activeTtsAbort?.abort();
+      cancelSpeculativeRun();
       ttsConnection?.close();
       dg.close();
       ws.close();
@@ -397,6 +545,7 @@ export function handleTwilioMedia(ws: WebSocket) {
 
   ws.on('close', async () => {
     activeTtsAbort?.abort();
+    cancelSpeculativeRun();
     ttsConnection?.close();
     dg.close();
 

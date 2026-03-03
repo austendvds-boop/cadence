@@ -100,7 +100,7 @@ export async function runAgent(messages: ChatMsg[]) {
   return response.choices[0]?.message;
 }
 
-export async function runAgentStream(messages: ChatMsg[], onToken: (token: string) => void) {
+export async function runAgentStream(messages: ChatMsg[], onToken: (token: string) => void, signal?: AbortSignal) {
   if (!llmClient) throw new Error('Missing OPENAI_API_KEY or GROQ_API_KEY');
 
   const stream = await llmClient.chat.completions.create({
@@ -109,7 +109,7 @@ export async function runAgentStream(messages: ChatMsg[], onToken: (token: strin
     stream: true,
     messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages] as any,
     tools: toolDefinitions as any,
-  });
+  }, signal ? { signal } : undefined);
 
   let content = '';
   const toolCalls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }> = [];
