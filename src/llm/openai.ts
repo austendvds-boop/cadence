@@ -15,13 +15,79 @@ export const llmClient = (useGroq || env.OPENAI_API_KEY)
       baseURL: useGroq ? 'https://api.groq.com/openai/v1' : undefined,
     })
   : null;
-export const LLM_MODEL = useGroq ? 'llama-3.3-70b-versatile' : (env.OPENAI_MODEL || 'gpt-4o');
+export const LLM_MODEL = useGroq ? env.GROQ_MODEL : (env.OPENAI_MODEL || 'gpt-4o');
 
 if (llmClient) {
   logger.info({ provider: useGroq ? 'groq' : 'openai', model: LLM_MODEL }, 'LLM provider initialized');
 }
 
 const openaiTts = env.OPENAI_API_KEY ? new OpenAI({ apiKey: env.OPENAI_API_KEY }) : null;
+
+const DEEPGRAM_TTS_WS_URL = 'wss://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=mulaw&sample_rate=8000&container=none';
+
+export class DeepgramTtsConnection {
+  private ws: WebSocket | null = null;
+  private connecting: Promise<WebSocket> | null = null;
+  private readonly apiKey: string;
+  private destroyed = false;
+
+  constructor(apiKey = env.DEEPGRAM_API_KEY) {
+    if (!apiKey) throw new Error('Missing DEEPGRAM_API_KEY');
+    this.apiKey = apiKey;
+  }
+
+  async warm(): Promise<void> {
+    await this.getSocket();
+  }
+
+  async getSocket(): Promise<WebSocket> {
+    if (this.destroyed) throw new Error('TTS connection has been closed');
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) return this.ws;
+    if (this.connecting) return this.connecting;
+
+    this.connecting = new Promise<WebSocket>((resolve, reject) => {
+      const socket = new WebSocket(DEEPGRAM_TTS_WS_URL, {
+        headers: { Authorization: `Token ${this.apiKey}` }
+      });
+
+      const cleanup = () => {
+        socket.removeAllListeners('open');
+        socket.removeAllListeners('error');
+      };
+
+      socket.once('open', () => {
+        cleanup();
+        this.ws = socket;
+        this.connecting = null;
+        socket.on('close', () => {
+          if (this.ws === socket) this.ws = null;
+        });
+        socket.on('error', () => {
+          if (this.ws === socket) this.ws = null;
+        });
+        resolve(socket);
+      });
+
+      socket.once('error', (err) => {
+        cleanup();
+        if (this.ws === socket) this.ws = null;
+        this.connecting = null;
+        reject(err);
+      });
+    });
+
+    return this.connecting;
+  }
+
+  close(): void {
+    this.destroyed = true;
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.close();
+    }
+    this.ws = null;
+    this.connecting = null;
+  }
+}
 
 export async function runAgent(messages: ChatMsg[]) {
   if (!llmClient) throw new Error('Missing OPENAI_API_KEY or GROQ_API_KEY');
@@ -164,13 +230,42 @@ export async function* streamMuLawChunks(text: string): AsyncGenerator<string> {
   }
 }
 
-function extractSentenceChunk(buffer: string): { chunk: string; remainder: string } | null {
-  const match = buffer.match(/([\s\S]*?[.!?])(?=\s|$)/);
-  if (!match) return null;
-  const chunk = match[1]?.trim();
-  if (!chunk) return null;
-  const cut = match.index! + match[1].length;
-  return { chunk, remainder: buffer.slice(cut) };
+function extractSpeakChunk(buffer: string): { chunk: string; remainder: string } | null {
+  const working = buffer.replace(/^\s+/, '');
+  if (!working) return null;
+
+  const sentenceEnd = working.match(/^(.*?[.!?])(?=\s|$)/);
+  if (sentenceEnd?.[1]) {
+    const chunk = sentenceEnd[1].trim();
+    return chunk ? { chunk, remainder: working.slice(sentenceEnd[1].length) } : null;
+  }
+
+  const clausePunctuation = [',', ';', ':'];
+  for (const punct of clausePunctuation) {
+    const idx = working.indexOf(punct);
+    if (idx < 0) continue;
+    const chunk = working.slice(0, idx + 1).trim();
+    const rest = working.slice(idx + 1);
+
+    if (punct === ',' && chunk.split(/\s+/).length < 4) continue;
+    if (chunk.split(/\s+/).length >= 4) return { chunk, remainder: rest };
+  }
+
+  const emDash = working.indexOf(' — ');
+  if (emDash > 0) {
+    const chunk = working.slice(0, emDash).trim();
+    if (chunk.split(/\s+/).length >= 4) return { chunk, remainder: working.slice(emDash + 3) };
+  }
+
+  const conjunctionMatch = working.match(/\b(and|but|so)\b/i);
+  if (conjunctionMatch?.index && conjunctionMatch.index > 0) {
+    const before = working.slice(0, conjunctionMatch.index).trim();
+    if (before.split(/\s+/).length >= 8) {
+      return { chunk: before, remainder: working.slice(conjunctionMatch.index) };
+    }
+  }
+
+  return null;
 }
 
 async function streamDeepgramRest(text: string, signal: AbortSignal | undefined, onFrame: (payload: string) => void): Promise<void> {
@@ -213,12 +308,11 @@ async function streamDeepgramRest(text: string, signal: AbortSignal | undefined,
 export async function streamDeepgramTTS(
   textStream: AsyncIterable<string>,
   onFrame: (payload: string) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  persistentConnection?: DeepgramTtsConnection
 ): Promise<void> {
   const apiKey = env.DEEPGRAM_API_KEY;
   if (!apiKey) throw new Error('Missing DEEPGRAM_API_KEY');
-
-  const wsUrl = 'wss://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=mulaw&sample_rate=8000&container=none';
 
   let fullText = '';
   let textBuffer = '';
@@ -226,9 +320,9 @@ export async function streamDeepgramTTS(
 
   let ws: WebSocket | null = null;
 
-  try {
-    ws = await new Promise<WebSocket>((resolve, reject) => {
-      const socket = new WebSocket(wsUrl, {
+  const connectEphemeral = async () => {
+    return new Promise<WebSocket>((resolve, reject) => {
+      const socket = new WebSocket(DEEPGRAM_TTS_WS_URL, {
         headers: { Authorization: `Token ${apiKey}` }
       });
 
@@ -246,6 +340,10 @@ export async function streamDeepgramTTS(
       });
       socket.once('error', reject);
     });
+  };
+
+  try {
+    ws = persistentConnection ? await persistentConnection.getSocket() : await connectEphemeral();
 
     ws.on('message', (data, isBinary) => {
       if (isBinary || Buffer.isBuffer(data)) {
@@ -254,9 +352,28 @@ export async function streamDeepgramTTS(
       }
     });
 
-    const ensureOpen = () => {
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
-        throw new Error('Deepgram websocket not open');
+    const sendJson = async (payload: object) => {
+      if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
+
+      const ensureSocket = async () => {
+        if (persistentConnection) {
+          ws = await persistentConnection.getSocket();
+        }
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          throw new Error('Deepgram websocket not open');
+        }
+      };
+
+      await ensureSocket();
+      const socket = ws;
+      if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error('Deepgram websocket not open');
+      try {
+        socket.send(JSON.stringify(payload));
+      } catch {
+        if (!persistentConnection) throw new Error('Deepgram websocket not open');
+        ws = await persistentConnection.getSocket();
+        if (!ws || ws.readyState !== WebSocket.OPEN) throw new Error('Deepgram websocket not open');
+        ws.send(JSON.stringify(payload));
       }
     };
 
@@ -266,50 +383,46 @@ export async function streamDeepgramTTS(
       textBuffer += token;
 
       while (true) {
-        const split = extractSentenceChunk(textBuffer);
+        const split = extractSpeakChunk(textBuffer);
         if (!split) break;
-        ensureOpen();
-        ws.send(JSON.stringify({ type: 'Speak', text: split.chunk }));
-        ws.send(JSON.stringify({ type: 'Flush' }));
+        await sendJson({ type: 'Speak', text: split.chunk });
+        await sendJson({ type: 'Flush' });
         textBuffer = split.remainder;
       }
     }
 
     const remaining = textBuffer.trim();
     if (remaining) {
-      ensureOpen();
-      ws.send(JSON.stringify({ type: 'Speak', text: remaining }));
+      await sendJson({ type: 'Speak', text: remaining });
     }
-    ensureOpen();
-    ws.send(JSON.stringify({ type: 'Flush' }));
-    ws.send(JSON.stringify({ type: 'Close' }));
+    await sendJson({ type: 'Flush' });
 
-    await new Promise<void>((resolve) => {
-      if (!ws) return resolve();
-      let resolved = false;
-      const done = () => {
-        if (resolved) return;
-        resolved = true;
-        resolve();
-      };
-      ws.once('close', done);
-      setTimeout(() => {
-        if (ws && ws.readyState !== WebSocket.CLOSED) ws.close();
-        done();
-      }, 1200);
-    });
+    if (!persistentConnection) {
+      await sendJson({ type: 'Close' });
+      await new Promise<void>((resolve) => {
+        if (!ws) return resolve();
+        let resolved = false;
+        const done = () => {
+          if (resolved) return;
+          resolved = true;
+          resolve();
+        };
+        ws.once('close', done);
+        setTimeout(() => {
+          if (ws && ws.readyState !== WebSocket.CLOSED) ws.close();
+          done();
+        }, 1200);
+      });
+    }
   } catch (err: any) {
     if (err?.name === 'AbortError') {
-      ws?.close();
+      if (!persistentConnection) ws?.close();
       throw err;
     }
 
-    ws?.close();
+    if (!persistentConnection) ws?.close();
 
     if (!gotAudio) {
-      for await (const token of textStream) {
-        fullText += token;
-      }
       const fallback = fullText.trim();
       if (fallback) await streamDeepgramRest(fallback, signal, onFrame);
       return;

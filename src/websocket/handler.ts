@@ -1,93 +1,11 @@
 import { WebSocket } from 'ws';
 import { logger } from '../utils/logger';
 import { createDeepgramBridge } from '../stt/deepgram';
-import { runAgent, runAgentStream, streamDeepgramTTS, type ChatMsg } from '../llm/openai';
+import { runAgentStream, streamDeepgramTTS, type ChatMsg, DeepgramTtsConnection } from '../llm/openai';
 import { executeTool } from '../tools/executor';
 import { sendSms } from '../twilio/service';
 
 type TwilioMsg = { event: string; streamSid?: string; start?: any; media?: { payload: string } };
-
-const CHIME_FRAME_SAMPLES = 160; // 20ms @ 8kHz
-
-function encodePcm16ToMuLaw(sample: number): number {
-  const BIAS = 0x84;
-  const CLIP = 32635;
-  let pcm = Math.max(-1, Math.min(1, sample));
-  let pcm16 = Math.round(pcm * 32767);
-
-  let sign = 0;
-  if (pcm16 < 0) {
-    sign = 0x80;
-    pcm16 = -pcm16;
-  }
-
-  if (pcm16 > CLIP) pcm16 = CLIP;
-  pcm16 += BIAS;
-
-  let exponent = 7;
-  for (let expMask = 0x4000; (pcm16 & expMask) === 0 && exponent > 0; expMask >>= 1) {
-    exponent--;
-  }
-
-  const mantissa = (pcm16 >> (exponent + 3)) & 0x0f;
-  return (~(sign | (exponent << 4) | mantissa)) & 0xff;
-}
-
-function appendSineWithEnvelope(
-  out: number[],
-  freqHz: number,
-  durationMs: number,
-  sampleRate: number,
-  amplitude: number,
-  fadeInMs: number,
-  fadeOutMs: number
-) {
-  const totalSamples = Math.round((durationMs / 1000) * sampleRate);
-  const fadeInSamples = Math.max(1, Math.round((fadeInMs / 1000) * sampleRate));
-  const fadeOutSamples = Math.max(1, Math.round((fadeOutMs / 1000) * sampleRate));
-
-  for (let i = 0; i < totalSamples; i++) {
-    const t = i / sampleRate;
-    let env = 1;
-    if (i < fadeInSamples) env = i / fadeInSamples;
-    const samplesFromEnd = totalSamples - 1 - i;
-    if (samplesFromEnd < fadeOutSamples) env = Math.min(env, samplesFromEnd / fadeOutSamples);
-    out.push(Math.sin(2 * Math.PI * freqHz * t) * amplitude * Math.max(0, env));
-  }
-}
-
-function appendSilence(out: number[], durationMs: number, sampleRate: number) {
-  const silenceSamples = Math.round((durationMs / 1000) * sampleRate);
-  for (let i = 0; i < silenceSamples; i++) out.push(0);
-}
-
-function generateAscendingChimeFramesBase64(): string[] {
-  const sampleRate = 8000;
-  const amplitude = 0.25;
-  const fadeInMs = 10;
-  const fadeOutMs = 20;
-  const gapMs = 30;
-
-  const pcm: number[] = [];
-  appendSineWithEnvelope(pcm, 523, 120, sampleRate, amplitude, fadeInMs, fadeOutMs);
-  appendSilence(pcm, gapMs, sampleRate);
-  appendSineWithEnvelope(pcm, 659, 120, sampleRate, amplitude, fadeInMs, fadeOutMs);
-  appendSilence(pcm, gapMs, sampleRate);
-  appendSineWithEnvelope(pcm, 784, 150, sampleRate, amplitude, fadeInMs, fadeOutMs);
-
-  const floatPcm = Float32Array.from(pcm);
-  const muLaw = Buffer.alloc(floatPcm.length);
-  for (let i = 0; i < floatPcm.length; i++) muLaw[i] = encodePcm16ToMuLaw(floatPcm[i]);
-
-  const frames: string[] = [];
-  for (let offset = 0; offset < muLaw.length; offset += CHIME_FRAME_SAMPLES) {
-    frames.push(muLaw.subarray(offset, Math.min(offset + CHIME_FRAME_SAMPLES, muLaw.length)).toString('base64'));
-  }
-
-  return frames;
-}
-
-const ASCENDING_CHIME_FRAMES = generateAscendingChimeFramesBase64();
 
 function oneChunkStream(text: string): AsyncIterable<string> {
   return {
@@ -265,6 +183,7 @@ export function handleTwilioMedia(ws: WebSocket) {
   let introTimer: ReturnType<typeof setTimeout> | null = null;
   let responding = false;
   let activeTtsAbort: AbortController | null = null;
+  let ttsConnection: DeepgramTtsConnection | null = null;
   const history: ChatMsg[] = [];
 
   function bargeIn(reason: 'final_transcript') {
@@ -275,15 +194,6 @@ export function handleTwilioMedia(ws: WebSocket) {
     activeTtsAbort = null;
     isSpeaking = false;
     speaking = false;
-  }
-
-  function playProcessingChime() {
-    if (!streamSid) return;
-    ASCENDING_CHIME_FRAMES.forEach((payload, index) => {
-      setTimeout(() => {
-        ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
-      }, index * 20);
-    });
   }
 
   async function speakFromStream(textStream: AsyncIterable<string>) {
@@ -304,7 +214,8 @@ export function handleTwilioMedia(ws: WebSocket) {
           if (!isSpeaking || !speaking) return;
           ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
         },
-        controller.signal
+        controller.signal,
+        ttsConnection ?? undefined
       );
     } catch (err: any) {
       if (err?.name !== 'AbortError') throw err;
@@ -339,10 +250,15 @@ export function handleTwilioMedia(ws: WebSocket) {
         const utterance = finalParts.join(' ').trim();
         finalParts = [];
         if (!utterance) return;
-        logger.info({ utterance }, 'utterance end — play chime and call LLM');
+        logger.info({ utterance }, 'utterance end — calling LLM');
         history.push({ role: 'user', content: utterance });
-        playProcessingChime();
         responding = true;
+
+        if (!ttsConnection) {
+          ttsConnection = new DeepgramTtsConnection();
+        }
+        ttsConnection.warm().catch((err) => logger.warn({ err }, 'pre-warm TTS websocket failed'));
+
         await respond();
         responding = false;
       } catch (err) {
@@ -426,6 +342,9 @@ export function handleTwilioMedia(ws: WebSocket) {
         }
         logger.info({ streamSid, callSid, callerNumber }, 'Twilio stream started');
 
+        ttsConnection = new DeepgramTtsConnection();
+        await ttsConnection.warm();
+
         const greeting = "Hi, thanks for calling Deer Valley Driving School! This is Cadence, how can I help you today?";
         history.push({ role: 'assistant', content: greeting });
 
@@ -434,11 +353,16 @@ export function handleTwilioMedia(ws: WebSocket) {
         isSpeaking = true;
         const streamStart = Date.now();
         let chunkCount = 0;
-        await streamDeepgramTTS(oneChunkStream(greeting), (payload) => {
-          if (!introPlaying) return;
-          ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
-          chunkCount++;
-        });
+        await streamDeepgramTTS(
+          oneChunkStream(greeting),
+          (payload) => {
+            if (!introPlaying) return;
+            ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
+            chunkCount++;
+          },
+          undefined,
+          ttsConnection
+        );
         const streamDuration = Date.now() - streamStart;
         const remainingPlayback = Math.max(chunkCount * 20 - streamDuration + 800, 800);
         logger.info({ chunks: chunkCount, streamDurationMs: streamDuration, remainingPlayback }, 'greeting sent');
@@ -465,6 +389,7 @@ export function handleTwilioMedia(ws: WebSocket) {
     }
     if (msg.event === 'stop') {
       activeTtsAbort?.abort();
+      ttsConnection?.close();
       dg.close();
       ws.close();
     }
@@ -472,6 +397,7 @@ export function handleTwilioMedia(ws: WebSocket) {
 
   ws.on('close', async () => {
     activeTtsAbort?.abort();
+    ttsConnection?.close();
     dg.close();
 
     const userMessages = history

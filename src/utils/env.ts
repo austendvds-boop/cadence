@@ -8,6 +8,7 @@ const EnvSchema = z.object({
   BASE_URL: z.string().default('http://localhost:3000'),
   OPENAI_API_KEY: z.string().optional(),
   GROQ_API_KEY: z.string().optional(),
+  GROQ_MODEL: z.string().default('llama-3.3-70b-specdec'),
   OPENAI_MODEL: z.string().default('gpt-4o-mini'),
   OPENAI_TTS_MODEL: z.string().default('tts-1'),
   OPENAI_TTS_VOICE: z.string().default('alloy'),
