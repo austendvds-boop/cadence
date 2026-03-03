@@ -405,11 +405,6 @@ export function handleTwilioMedia(ws: WebSocket) {
       if (!text || introPlaying) return;
 
       const wordCount = text.split(/\s+/).filter(Boolean).length;
-      if (isSpeaking && wordCount >= 3) {
-        logger.info({ transcript: text }, 'interim barge-in detected');
-        bargeIn('interim_transcript');
-        return;
-      }
 
       if (!isSpeaking && !responding && !speculativeRun && wordCount >= 6) {
         const speculativeInput = finalParts.length ? `${finalParts.join(' ')} ${text}` : text;
@@ -424,15 +419,6 @@ export function handleTwilioMedia(ws: WebSocket) {
     },
     onFinal: (t) => {
       if (!t.trim()) return;
-      if (isSpeaking || introPlaying) {
-        const wordCount = t.trim().split(/\s+/).filter(Boolean).length;
-        if (wordCount >= 3) {
-          bargeIn('final_transcript');
-        } else {
-          logger.debug({ transcript: t }, 'Ignoring short STT final while Cadence is speaking');
-          return;
-        }
-      }
       logger.info({ transcript: t }, 'STT final');
       finalParts.push(t);
     },
