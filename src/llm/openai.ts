@@ -286,8 +286,17 @@ export async function streamDeepgramTTS(
 
     await new Promise<void>((resolve) => {
       if (!ws) return resolve();
-      ws.once('close', () => resolve());
-      setTimeout(() => resolve(), 10000);
+      let resolved = false;
+      const done = () => {
+        if (resolved) return;
+        resolved = true;
+        resolve();
+      };
+      ws.once('close', done);
+      setTimeout(() => {
+        if (ws && ws.readyState !== WebSocket.CLOSED) ws.close();
+        done();
+      }, 1200);
     });
   } catch (err: any) {
     if (err?.name === 'AbortError') {

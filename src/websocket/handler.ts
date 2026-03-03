@@ -323,10 +323,12 @@ export function handleTwilioMedia(ws: WebSocket) {
   const dg = createDeepgramBridge({
     onInterim: () => {},
     onFinal: (t) => {
-      logger.info({ transcript: t }, 'STT final');
-      if (!introPlaying && (isSpeaking || speaking) && t.trim().length > 0) {
-        // bargeIn('final_transcript');
+      if (!t.trim()) return;
+      if (isSpeaking || speaking || introPlaying) {
+        logger.debug({ transcript: t }, 'Ignoring STT final while Cadence is speaking');
+        return;
       }
+      logger.info({ transcript: t }, 'STT final');
       finalParts.push(t);
     },
     onUtteranceEnd: async () => {
@@ -429,6 +431,7 @@ export function handleTwilioMedia(ws: WebSocket) {
 
         introPlaying = true;
         speaking = true;
+        isSpeaking = true;
         const streamStart = Date.now();
         let chunkCount = 0;
         await streamDeepgramTTS(oneChunkStream(greeting), (payload) => {
@@ -441,7 +444,13 @@ export function handleTwilioMedia(ws: WebSocket) {
         logger.info({ chunks: chunkCount, streamDurationMs: streamDuration, remainingPlayback }, 'greeting sent');
         speaking = false;
         await new Promise<void>(r => {
-          introTimer = setTimeout(() => { introPlaying = false; finalParts = []; introTimer = null; r(); }, remainingPlayback);
+          introTimer = setTimeout(() => {
+            introPlaying = false;
+            isSpeaking = false;
+            finalParts = [];
+            introTimer = null;
+            r();
+          }, remainingPlayback);
         });
       } catch (err) {
         logger.error({ err }, 'start event error');
@@ -449,7 +458,7 @@ export function handleTwilioMedia(ws: WebSocket) {
       }
     }
     if (msg.event === 'media' && msg.media?.payload) {
-      if (!speaking) {
+      if (!isSpeaking && !speaking && !introPlaying) {
         dg.sendMulaw(Buffer.from(msg.media.payload, 'base64'));
       }
       logger.debug('incoming audio packet');
