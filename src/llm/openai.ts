@@ -287,7 +287,7 @@ export async function streamDeepgramTTS(
     await new Promise<void>((resolve) => {
       if (!ws) return resolve();
       ws.once('close', () => resolve());
-      setTimeout(() => resolve(), 2500);
+      setTimeout(() => resolve(), 10000);
     });
   } catch (err: any) {
     if (err?.name === 'AbortError') {
