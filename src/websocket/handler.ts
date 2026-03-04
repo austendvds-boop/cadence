@@ -1,16 +1,16 @@
 import { WebSocket } from 'ws';
-import { logger } from '../utils/logger';
-import { createDeepgramBridge } from '../stt/deepgram';
+import { getTenant } from '../config/get-tenant';
+import type { TenantConfig } from '../config/tenants';
 import { runAgentStream, streamDeepgramTTS, type ChatMsg } from '../llm/openai';
+import { createDeepgramBridge, type DeepgramBridge } from '../stt/deepgram';
 import { executeTool } from '../tools/executor';
 import { sendSms } from '../twilio/service';
+import { logger } from '../utils/logger';
 
 type TwilioStartMessage = {
   streamSid?: string;
   callSid?: string;
-  customParameters?: {
-    callerNumber?: string;
-  };
+  customParameters?: Record<string, string | undefined>;
 };
 
 type TwilioMsg = {
@@ -20,6 +20,20 @@ type TwilioMsg = {
   media?: { payload: string };
   mark?: { name?: string };
 };
+
+function getStartParameter(start: TwilioStartMessage | undefined, keys: string[]): string {
+  const params = start?.customParameters;
+  if (!params) return '';
+
+  for (const key of keys) {
+    const value = params[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return '';
+}
 
 function parseJsonSafe<T>(raw: string, source: string): T | null {
   try {
@@ -316,6 +330,9 @@ export function handleTwilioMedia(ws: WebSocket) {
   let streamSid = '';
   let callSid = '';
   let callerNumber = '';
+  let toNumber = '';
+  let activeTenant: TenantConfig | undefined;
+  let dg: DeepgramBridge | null = null;
   let finalParts: string[] = [];
   let speaking = false;
   let isSpeaking = false;
@@ -560,7 +577,7 @@ export function handleTwilioMedia(ws: WebSocket) {
           if (!isSpeaking || !speaking) return;
           pacedSender.push(payload);
         },
-        controller.signal
+        { signal: controller.signal, model: activeTenant?.ttsModel }
       );
 
       const { bytesSent, firstFrameSentAt } = await pacedSender.flush();
@@ -591,8 +608,8 @@ export function handleTwilioMedia(ws: WebSocket) {
     await speakFromStream(oneChunkStream(text), 'tts');
   }
 
-  const dg = createDeepgramBridge({
-    onInterim: (t) => {
+  const sttCallbacks = {
+    onInterim: (t: string) => {
       if (introPlaying || !responding) return;
 
       const transcript = t.trim();
@@ -608,7 +625,7 @@ export function handleTwilioMedia(ws: WebSocket) {
         bargeIn('interim_transcript');
       }
     },
-    onFinal: (t) => {
+    onFinal: (t: string) => {
       const transcript = t.trim();
       if (!transcript) return;
       if (introPlaying) return;
@@ -652,13 +669,23 @@ export function handleTwilioMedia(ws: WebSocket) {
         bargeIn('speech_started');
       }
     }
-  });
+  };
+
+  function initDeepgramBridge(tenant: TenantConfig) {
+    dg?.close();
+    dg = createDeepgramBridge(sttCallbacks, { model: tenant.sttModel });
+  }
 
   async function respond(depth = 0) {
     try {
+      const tenant = activeTenant;
+      if (!tenant) {
+        throw new Error('No tenant configuration for active call');
+      }
+
       if (depth > 5) {
         await speakText("I'm having some trouble right now. Let me connect you with Austen.");
-        await executeTool('transfer_to_human', {}, { callSid, callerNumber });
+        await executeTool('transfer_to_human', {}, { callSid, callerNumber, tenant });
         return;
       }
 
@@ -673,7 +700,7 @@ export function handleTwilioMedia(ws: WebSocket) {
           return await runAgentStream(history, (token) => {
             tokenBuffer.push(token);
             tokenQueue.push(token);
-          }, { signal: llmAbortController.signal });
+          }, { signal: llmAbortController.signal, tenant });
         } finally {
           tokenQueue.close();
         }
@@ -710,7 +737,7 @@ export function handleTwilioMedia(ws: WebSocket) {
 
           logger.info({ tool: c.function.name, args }, 'tool call');
           try {
-            const result = await executeTool(c.function.name, args, { callSid, callerNumber });
+            const result = await executeTool(c.function.name, args, { callSid, callerNumber, tenant });
             history.push({ role: 'tool', name: c.function.name, tool_call_id: c.id, content: JSON.stringify(result) });
           } catch (toolErr) {
             logger.error({ err: toolErr, tool: c.function.name }, 'tool execution failed');
@@ -736,7 +763,9 @@ export function handleTwilioMedia(ws: WebSocket) {
       logger.error({ err }, 'respond() error');
       try {
         await speakText('Sorry, I ran into a technical issue. Let me connect you with someone who can help.');
-        await executeTool('transfer_to_human', {}, { callSid, callerNumber });
+        if (activeTenant) {
+          await executeTool('transfer_to_human', {}, { callSid, callerNumber, tenant: activeTenant });
+        }
       } catch (_) {
         ws.close();
       }
@@ -754,17 +783,33 @@ export function handleTwilioMedia(ws: WebSocket) {
       try {
         streamSid = msg.start?.streamSid || '';
         callSid = msg.start?.callSid || '';
-        callerNumber = msg.start?.customParameters?.callerNumber || '';
-        logger.info({ callerNumber }, 'caller number from stream params');
+        callerNumber = getStartParameter(msg.start, ['callerNumber', 'CallerNumber', 'fromNumber', 'From']);
+        toNumber = getStartParameter(msg.start, ['toNumber', 'To', 'calledNumber', 'twilioNumber']);
+
+        activeTenant = getTenant(toNumber);
+        logger.info({ callerNumber, toNumber, tenantId: activeTenant?.id }, 'stream params resolved');
+
+        if (!activeTenant) {
+          logger.error({ toNumber }, 'No tenant found for called Twilio number');
+          const unsupportedMessage =
+            'Sorry, this number is not configured yet. Please call back later or contact support.';
+          await speakText(unsupportedMessage);
+          ws.close();
+          return;
+        }
+
+        initDeepgramBridge(activeTenant);
+
         if (callerNumber) {
           history.push({
             role: 'system',
             content: `The caller's phone number is ${callerNumber}. Use this exact number for any send_sms tool calls.`
           } as any);
         }
-        logger.info({ streamSid, callSid, callerNumber }, 'Twilio stream started');
 
-        const greeting = "Hi, thanks for calling Deer Valley Driving School! This is Cadence, how can I help you today?";
+        logger.info({ streamSid, callSid, callerNumber, toNumber, tenantId: activeTenant.id }, 'Twilio stream started');
+
+        const greeting = activeTenant.greeting;
         history.push({ role: 'assistant', content: greeting });
 
         introPlaying = true;
@@ -799,7 +844,7 @@ export function handleTwilioMedia(ws: WebSocket) {
 
     if (msg.event === 'media' && msg.media?.payload) {
       // Keep STT hot even while Cadence is speaking so barge-in can be detected.
-      if (!introPlaying) {
+      if (!introPlaying && dg) {
         if (!dg.isHealthy()) {
           if (!sttUnavailableLogged) {
             logger.warn('Deepgram STT unavailable; continuing call without STT');
@@ -822,7 +867,8 @@ export function handleTwilioMedia(ws: WebSocket) {
     if (msg.event === 'stop') {
       pendingUtterances.length = 0;
       abortActiveResponse('twilio_stop');
-      dg.close();
+      dg?.close();
+      dg = null;
       ws.close();
     }
   });
@@ -831,7 +877,13 @@ export function handleTwilioMedia(ws: WebSocket) {
     introPlaying = false;
     pendingUtterances.length = 0;
     abortActiveResponse('websocket_close');
-    dg.close();
+    dg?.close();
+    dg = null;
+
+    if (!activeTenant) {
+      logger.warn({ toNumber }, 'Skipping call summary SMS because tenant was not resolved');
+      return;
+    }
 
     const userMessages = history
       .filter((m) => m.role === 'user')
@@ -846,10 +898,10 @@ export function handleTwilioMedia(ws: WebSocket) {
     const summary = `📞 Cadence Call Summary\nCaller: ${callerNumber || 'Unknown'}\nExchanges: ${userTurns}\nInterest: ${interest}\nTopic: ${topic}\n\nConversation:\n${conversationLines}`;
 
     try {
-      await sendSms('+16026633502', summary);
-      logger.info({ to: '+16026633502' }, 'call summary SMS sent');
+      await sendSms(activeTenant.ownerCell, summary);
+      logger.info({ to: activeTenant.ownerCell, tenantId: activeTenant.id }, 'call summary SMS sent');
     } catch (err) {
-      logger.error({ err }, 'call summary SMS failed');
+      logger.error({ err, tenantId: activeTenant.id }, 'call summary SMS failed');
     }
   });
 }

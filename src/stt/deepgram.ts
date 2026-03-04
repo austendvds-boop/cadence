@@ -15,6 +15,10 @@ export type DeepgramBridge = {
   isHealthy: () => boolean;
 };
 
+type DeepgramBridgeOptions = {
+  model?: string;
+};
+
 type DeepgramMessage = {
   type?: string;
   is_final?: boolean;
@@ -27,10 +31,11 @@ type DeepgramMessage = {
 
 const MAX_RECONNECT_ATTEMPTS = 3;
 const RECONNECT_DELAYS_MS = [1000, 2000, 4000] as const;
+const DEFAULT_DEEPGRAM_STT_MODEL = 'nova-2';
 
-function getDeepgramListenUrl(): string {
+function getDeepgramListenUrl(model: string): string {
   const params = new URLSearchParams({
-    model: 'nova-2',
+    model,
     language: 'en-US',
     encoding: 'mulaw',
     sample_rate: '8000',
@@ -53,9 +58,11 @@ function rawDataToString(data: RawData): string {
   return Buffer.from(data).toString();
 }
 
-export function createDeepgramBridge(cb: SttCallbacks): DeepgramBridge {
+export function createDeepgramBridge(cb: SttCallbacks, options: DeepgramBridgeOptions = {}): DeepgramBridge {
   const apiKey = env.DEEPGRAM_API_KEY;
   if (!apiKey) throw new Error('Missing DEEPGRAM_API_KEY');
+
+  const sttModel = options.model?.trim() || DEFAULT_DEEPGRAM_STT_MODEL;
 
   let ws: WebSocket | null = null;
   let isClosedByCaller = false;
@@ -87,7 +94,7 @@ export function createDeepgramBridge(cb: SttCallbacks): DeepgramBridge {
     reconnectAttempts += 1;
 
     logger.warn(
-      { reason, attempt: reconnectAttempts, maxAttempts: MAX_RECONNECT_ATTEMPTS, delayMs },
+      { reason, attempt: reconnectAttempts, maxAttempts: MAX_RECONNECT_ATTEMPTS, delayMs, model: sttModel },
       'Scheduling Deepgram reconnect'
     );
 
@@ -129,7 +136,7 @@ export function createDeepgramBridge(cb: SttCallbacks): DeepgramBridge {
   const connect = () => {
     if (isClosedByCaller || reconnectDisabled) return;
 
-    const socket = new WebSocket(getDeepgramListenUrl(), {
+    const socket = new WebSocket(getDeepgramListenUrl(sttModel), {
       headers: { Authorization: `Token ${apiKey}` },
     });
 
@@ -140,7 +147,7 @@ export function createDeepgramBridge(cb: SttCallbacks): DeepgramBridge {
       clearReconnectTimer();
       reconnectAttempts = 0;
       isHealthy = true;
-      logger.info('Deepgram connected');
+      logger.info({ model: sttModel }, 'Deepgram connected');
     });
 
     socket.on('message', (data) => {
@@ -153,7 +160,7 @@ export function createDeepgramBridge(cb: SttCallbacks): DeepgramBridge {
 
       isHealthy = false;
       const reason = reasonBuffer.toString();
-      logger.warn({ code, reason }, 'Deepgram connection closed');
+      logger.warn({ code, reason, model: sttModel }, 'Deepgram connection closed');
       scheduleReconnect('close');
     });
 
@@ -161,7 +168,7 @@ export function createDeepgramBridge(cb: SttCallbacks): DeepgramBridge {
       if (ws !== socket) return;
 
       isHealthy = false;
-      logger.error({ err }, 'Deepgram error');
+      logger.error({ err, model: sttModel }, 'Deepgram error');
       scheduleReconnect('error');
 
       if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
@@ -179,13 +186,13 @@ export function createDeepgramBridge(cb: SttCallbacks): DeepgramBridge {
       try {
         ws.send(audio, (err) => {
           if (!err) return;
-          logger.error({ err }, 'Deepgram audio send failed');
+          logger.error({ err, model: sttModel }, 'Deepgram audio send failed');
           isHealthy = false;
           scheduleReconnect('error');
         });
         return true;
       } catch (err) {
-        logger.error({ err }, 'Deepgram audio send threw');
+        logger.error({ err, model: sttModel }, 'Deepgram audio send threw');
         isHealthy = false;
         scheduleReconnect('error');
         return false;

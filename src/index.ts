@@ -20,6 +20,7 @@ app.post('/voice', (req, res) => {
     .ele('Connect')
     .ele('Stream', { url: wsUrl })
     .ele('Parameter', { name: 'callerNumber', value: req.body.From || '' }).up()
+    .ele('Parameter', { name: 'toNumber', value: req.body.To || '' }).up()
     .ele('Parameter', { name: 'callSid', value: req.body.CallSid || '' }).up()
     .up().up().up().end({ prettyPrint: true });
   res.type('text/xml').send(xml);

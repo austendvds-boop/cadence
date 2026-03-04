@@ -1,8 +1,9 @@
 import OpenAI from 'openai';
-import { WebSocket } from 'ws';
+import { WebSocket, type RawData } from 'ws';
+import { buildSystemPrompt } from '../conversation/system-prompt';
+import type { TenantConfig } from '../config/tenants';
 import { env } from '../utils/env';
 import { logger } from '../utils/logger';
-import { SYSTEM_PROMPT } from '../conversation/system-prompt';
 import { toolDefinitions } from './tools';
 
 export type ChatMsg = { role: 'system' | 'user' | 'assistant' | 'tool'; content: string; tool_call_id?: string; name?: string };
@@ -22,9 +23,16 @@ if (llmClient) {
 
 type RequestOptions = {
   signal?: AbortSignal;
+  tenant?: TenantConfig;
+};
+
+type StreamDeepgramTtsOptions = {
+  signal?: AbortSignal;
+  model?: string;
 };
 
 const DEFAULT_MAX_HISTORY_MESSAGES = 20;
+const DEFAULT_DEEPGRAM_TTS_MODEL = 'aura-2-thalia-en';
 
 function getMaxHistoryMessages(): number {
   const configured = Number(env.MAX_HISTORY_MESSAGES);
@@ -34,7 +42,7 @@ function getMaxHistoryMessages(): number {
   return Math.floor(configured);
 }
 
-function buildMessagesWithSlidingWindow(messages: ChatMsg[]): ChatMsg[] {
+function buildMessagesWithSlidingWindow(messages: ChatMsg[], tenant: TenantConfig): ChatMsg[] {
   const maxHistoryMessages = getMaxHistoryMessages();
   let remainingNonSystemMessages = maxHistoryMessages;
   const keptReversed: ChatMsg[] = [];
@@ -61,17 +69,18 @@ function buildMessagesWithSlidingWindow(messages: ChatMsg[]): ChatMsg[] {
     logger.debug({ droppedNonSystemMessages, maxHistoryMessages }, 'Trimmed chat history with sliding window');
   }
 
-  return [{ role: 'system', content: SYSTEM_PROMPT }, ...keptReversed.reverse()];
+  return [{ role: 'system', content: buildSystemPrompt(tenant) }, ...keptReversed.reverse()];
 }
 
 export async function runAgentStream(messages: ChatMsg[], onToken: (token: string) => void, options: RequestOptions = {}) {
   if (!llmClient) throw new Error('Missing OPENAI_API_KEY or GROQ_API_KEY');
+  if (!options.tenant) throw new Error('Missing tenant configuration for LLM request');
 
   const stream = await llmClient.chat.completions.create({
     model: LLM_MODEL,
     temperature: 0.7,
     stream: true,
-    messages: buildMessagesWithSlidingWindow(messages) as any,
+    messages: buildMessagesWithSlidingWindow(messages, options.tenant) as any,
     tools: toolDefinitions as any,
   }, {
     signal: options.signal,
@@ -121,11 +130,24 @@ function extractSentenceChunk(buffer: string): { chunk: string; remainder: strin
   return { chunk, remainder: buffer.slice(cut) };
 }
 
-async function streamDeepgramRest(text: string, signal: AbortSignal | undefined, onFrame: (payload: string) => void): Promise<void> {
+function rawDataToBuffer(data: RawData): Buffer {
+  if (Buffer.isBuffer(data)) return data;
+  if (Array.isArray(data)) return Buffer.concat(data);
+  return Buffer.from(data);
+}
+
+function isAbortError(err: unknown): boolean {
+  if (err instanceof DOMException) return err.name === 'AbortError';
+  if (err instanceof Error) return err.name === 'AbortError';
+  return false;
+}
+
+async function streamDeepgramRest(text: string, options: StreamDeepgramTtsOptions, onFrame: (payload: string) => void): Promise<void> {
   const apiKey = env.DEEPGRAM_API_KEY;
   if (!apiKey) throw new Error('Missing DEEPGRAM_API_KEY');
 
-  const url = 'https://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=mulaw&sample_rate=8000&container=none';
+  const model = options.model || DEFAULT_DEEPGRAM_TTS_MODEL;
+  const url = `https://api.deepgram.com/v1/speak?model=${encodeURIComponent(model)}&encoding=mulaw&sample_rate=8000&container=none`;
 
   const response = await fetch(url, {
     method: 'POST',
@@ -134,7 +156,7 @@ async function streamDeepgramRest(text: string, signal: AbortSignal | undefined,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ text }),
-    signal,
+    signal: options.signal,
   });
 
   if (!response.ok) {
@@ -145,7 +167,9 @@ async function streamDeepgramRest(text: string, signal: AbortSignal | undefined,
   const FRAME_SIZE = 160;
   let remainder = Buffer.alloc(0);
 
-  for await (const rawChunk of (response.body as any)) {
+  if (!response.body) return;
+
+  for await (const rawChunk of response.body as AsyncIterable<Uint8Array>) {
     const buf = Buffer.concat([remainder, Buffer.from(rawChunk)]);
     let offset = 0;
     while (offset + FRAME_SIZE <= buf.length) {
@@ -161,12 +185,13 @@ async function streamDeepgramRest(text: string, signal: AbortSignal | undefined,
 export async function streamDeepgramTTS(
   textStream: AsyncIterable<string>,
   onFrame: (payload: string) => void,
-  signal?: AbortSignal
+  options: StreamDeepgramTtsOptions = {}
 ): Promise<void> {
   const apiKey = env.DEEPGRAM_API_KEY;
   if (!apiKey) throw new Error('Missing DEEPGRAM_API_KEY');
 
-  const wsUrl = 'wss://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=mulaw&sample_rate=8000&container=none';
+  const model = options.model || DEFAULT_DEEPGRAM_TTS_MODEL;
+  const wsUrl = `wss://api.deepgram.com/v1/speak?model=${encodeURIComponent(model)}&encoding=mulaw&sample_rate=8000&container=none`;
 
   let fullText = '';
   let textBuffer = '';
@@ -185,21 +210,24 @@ export async function streamDeepgramTTS(
         reject(new DOMException('aborted', 'AbortError'));
       };
 
-      if (signal?.aborted) return onAbort();
-      signal?.addEventListener('abort', onAbort, { once: true });
+      if (options.signal?.aborted) {
+        onAbort();
+        return;
+      }
+
+      options.signal?.addEventListener('abort', onAbort, { once: true });
 
       socket.once('open', () => {
-        signal?.removeEventListener('abort', onAbort);
+        options.signal?.removeEventListener('abort', onAbort);
         resolve(socket);
       });
       socket.once('error', reject);
     });
 
     ws.on('message', (data, isBinary) => {
-      if (isBinary || Buffer.isBuffer(data)) {
-        gotAudio = true;
-        onFrame(Buffer.from(data as any).toString('base64'));
-      }
+      if (!isBinary && !Buffer.isBuffer(data)) return;
+      gotAudio = true;
+      onFrame(rawDataToBuffer(data).toString('base64'));
     });
 
     const ensureOpen = () => {
@@ -209,7 +237,7 @@ export async function streamDeepgramTTS(
     };
 
     for await (const token of textStream) {
-      if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
+      if (options.signal?.aborted) throw new DOMException('aborted', 'AbortError');
       fullText += token;
       textBuffer += token;
 
@@ -246,8 +274,8 @@ export async function streamDeepgramTTS(
         done();
       }, 1200);
     });
-  } catch (err: any) {
-    if (err?.name === 'AbortError') {
+  } catch (err: unknown) {
+    if (isAbortError(err)) {
       ws?.close();
       throw err;
     }
@@ -255,11 +283,10 @@ export async function streamDeepgramTTS(
     ws?.close();
 
     if (!gotAudio) {
-      for await (const token of textStream) {
-        fullText += token;
-      }
       const fallback = fullText.trim();
-      if (fallback) await streamDeepgramRest(fallback, signal, onFrame);
+      if (fallback) {
+        await streamDeepgramRest(fallback, options, onFrame);
+      }
       return;
     }
 
