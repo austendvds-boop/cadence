@@ -11,7 +11,10 @@
     "db:migrate": "tsx db/migrate.ts",
     "db:seed:dvds": "tsx scripts/seed-dvds-client.ts",
     "db:reset:onboarding": "tsx scripts/reset-onboarding-client.ts",
-    "smoke:onboarding": "tsx scripts/smoke-onboarding.ts"
+    "smoke:onboarding": "tsx scripts/smoke-onboarding.ts",
+    "smoke:tenant-clone": "tsx scripts/smoke-tenant-clone.ts",
+    "tenant:rebase": "tsx scripts/rebase-tenant-from-baseline.ts",
+    "tenant:verify": "tsx scripts/verify-tenant-baseline.ts"
   },
   "author": "Steve",
   "license": "MIT",

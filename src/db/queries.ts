@@ -2,6 +2,7 @@ import type { QueryResultRow } from 'pg';
 import { dbQuery } from './client';
 
 export type SubscriptionStatus = 'pending' | 'trial' | 'active' | 'past_due' | 'canceled';
+export type BootstrapState = 'draft' | 'pending_checkout' | 'checkout_created' | 'active' | 'failed';
 export type ClientStatusFilter = SubscriptionStatus | 'all';
 
 export type JsonPrimitive = string | number | boolean | null;
@@ -35,6 +36,11 @@ export interface Client {
   sttModel: string;
   llmModel: string;
   toolsAllowed: string[];
+  tenantKey: string | null;
+  baselineVersion: string | null;
+  baselineHash: string | null;
+  overrideHash: string | null;
+  bootstrapState: BootstrapState;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -60,6 +66,11 @@ export interface CreateClientInput {
   sttModel?: string;
   llmModel?: string;
   toolsAllowed?: string[];
+  tenantKey?: string | null;
+  baselineVersion?: string | null;
+  baselineHash?: string | null;
+  overrideHash?: string | null;
+  bootstrapState?: BootstrapState;
 }
 
 export interface UpdateClientInput {
@@ -83,6 +94,11 @@ export interface UpdateClientInput {
   sttModel?: string;
   llmModel?: string;
   toolsAllowed?: string[];
+  tenantKey?: string | null;
+  baselineVersion?: string | null;
+  baselineHash?: string | null;
+  overrideHash?: string | null;
+  bootstrapState?: BootstrapState;
 }
 
 export interface CallLog {
@@ -154,6 +170,11 @@ interface ClientRow extends QueryResultRow {
   stt_model: string;
   llm_model: string;
   tools_allowed: unknown;
+  tenant_key: string | null;
+  baseline_version: string | null;
+  baseline_hash: string | null;
+  override_hash: string | null;
+  bootstrap_state: BootstrapState;
   created_at: Date;
   updated_at: Date;
 }
@@ -246,6 +267,11 @@ function mapClientRow(row: ClientRow): Client {
     sttModel: row.stt_model,
     llmModel: row.llm_model,
     toolsAllowed: asStringArray(row.tools_allowed),
+    tenantKey: row.tenant_key,
+    baselineVersion: row.baseline_version,
+    baselineHash: row.baseline_hash,
+    overrideHash: row.override_hash,
+    bootstrapState: row.bootstrap_state,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -332,6 +358,21 @@ export async function getClientByOwnerEmail(ownerEmail: string): Promise<Client 
   return row ? mapClientRow(row) : null;
 }
 
+export async function getClientByTenantKey(tenantKey: string): Promise<Client | null> {
+  const result = await dbQuery<ClientRow>(
+    `
+      SELECT *
+      FROM clients
+      WHERE tenant_key = $1
+      LIMIT 1
+    `,
+    [tenantKey]
+  );
+
+  const row = result.rows[0];
+  return row ? mapClientRow(row) : null;
+}
+
 export async function getClientByStripeCustomerId(stripeCustomerId: string): Promise<Client | null> {
   const result = await dbQuery<ClientRow>(
     `
@@ -400,11 +441,17 @@ export async function createClient(input: CreateClientInput): Promise<Client> {
         tts_model,
         stt_model,
         llm_model,
-        tools_allowed
+        tools_allowed,
+        tenant_key,
+        baseline_version,
+        baseline_hash,
+        override_hash,
+        bootstrap_state
       )
       VALUES (
         $1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10,
-        $11, $12, $13, $14, $15, $16, $17, $18, $19, $20::text[]
+        $11, $12, $13, $14, $15, $16, $17, $18, $19, $20::text[],
+        $21, $22, $23, $24, $25
       )
       RETURNING *
     `,
@@ -429,6 +476,11 @@ export async function createClient(input: CreateClientInput): Promise<Client> {
       input.sttModel ?? 'nova-2',
       input.llmModel ?? 'gpt-4o-mini',
       input.toolsAllowed ?? ['transfer_to_human', 'send_sms'],
+      input.tenantKey ?? null,
+      input.baselineVersion ?? null,
+      input.baselineHash ?? null,
+      input.overrideHash ?? null,
+      input.bootstrapState ?? 'draft',
     ]
   );
 
@@ -465,6 +517,11 @@ export async function updateClient(clientId: string, input: UpdateClientInput): 
   pushSet('stt_model', input.sttModel);
   pushSet('llm_model', input.llmModel);
   pushSet('tools_allowed', input.toolsAllowed, '::text[]');
+  pushSet('tenant_key', input.tenantKey);
+  pushSet('baseline_version', input.baselineVersion);
+  pushSet('baseline_hash', input.baselineHash);
+  pushSet('override_hash', input.overrideHash);
+  pushSet('bootstrap_state', input.bootstrapState);
 
   if (setClauses.length === 0) {
     return getClientById(clientId);
@@ -489,7 +546,8 @@ export async function deactivateClient(clientId: string): Promise<Client | null>
   const result = await dbQuery<ClientRow>(
     `
       UPDATE clients
-      SET subscription_status = 'canceled'
+      SET subscription_status = 'canceled',
+          bootstrap_state = 'failed'
       WHERE id = $1
       RETURNING *
     `,

@@ -1,5 +1,44 @@
 # Coder Context
 
+## 2026-03-04 (DVDS-baseline tenant replication pipeline + Autom8 rebase tooling)
+- Implemented deterministic DVDS baseline-clone architecture:
+  - Added baseline registry: `src/config/baselines/dvds-baseline.ts`
+  - Added strict override contract + normalization/hashing: `src/tenants/bootstrap-contract.ts`, `src/tenants/stable-hash.ts`
+  - Added baseline compiler: `src/tenants/clone-from-baseline.ts`
+  - Added idempotent upsert orchestrator: `src/tenants/bootstrap-orchestrator.ts`
+- Added DB metadata migration for baseline/idempotency tracking:
+  - `db/migrations/007_add_tenant_baseline_metadata.sql`
+  - New `clients` columns: `tenant_key`, `baseline_version`, `baseline_hash`, `override_hash`, `bootstrap_state`
+  - Added unique partial index on `tenant_key`
+- Updated query layer to support metadata + tenant-key lookups:
+  - `src/db/queries.ts`
+  - Added `getClientByTenantKey(...)`
+  - Extended create/update mapping to persist baseline metadata + `bootstrap_state`
+- Routed onboarding + checkout provisioning through shared bootstrap orchestrator:
+  - `src/tools/executor.ts`
+    - replaced ad-hoc onboarding pending-client prompt/build path with baseline bootstrap call
+    - checkout payload now includes business/script data (`businessDescription`, `hours`, `faqs`, `customBusinessRules`)
+  - `src/api/stripe.ts`
+    - checkout now boots/updates tenants via orchestrator (single path)
+    - preserves tenant data deterministically on reruns
+    - maps subscription state into `bootstrap_state` transitions
+- Added rebase + verification + deterministic clone smoke tooling:
+  - `scripts/rebase-tenant-from-baseline.ts`
+  - `scripts/verify-tenant-baseline.ts`
+  - `scripts/smoke-tenant-clone.ts`
+  - package scripts added: `smoke:tenant-clone`, `tenant:rebase`, `tenant:verify`
+- Env/config updates:
+  - Added `BASELINE_VERSION_CURRENT` parsing in `src/utils/env.ts`
+  - Added sample value in `.env.example`
+- DB + tooling verification run (local against configured Neon DB):
+  - `npm run build` ✅
+  - `npm run smoke:tenant-clone` ✅
+  - `npm run db:migrate` ✅ (applied migration `007_add_tenant_baseline_metadata.sql`)
+  - `npm run tenant:rebase -- --dry-run` ✅
+  - `npm run tenant:rebase -- --owner-email aust@autom8everything.com --apply ...` ✅
+  - Re-run of same rebase command returned idempotent no-op (`changed_fields: []`, `idempotent: true`) ✅
+  - `npm run tenant:verify -- --owner-email aust@autom8everything.com --expect-script-contains autom8everything.com/onboarding --expect-business-name "Cadence by Autom8"` ✅
+
 ## 2026-03-04 (Onboarding pipeline hard reset to stable baseline + health instrumentation)
 - Pulled latest `main` first and kept prior STT 400 safety clamp behavior intact (`src/stt/deepgram.ts`).
 - Added production onboarding reset script: `scripts/reset-onboarding-client.ts` (`npm run db:reset:onboarding`).

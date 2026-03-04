@@ -9,6 +9,7 @@ const EnvSchema = z.object({
   OPENAI_API_KEY: z.string().optional(),
   GROQ_API_KEY: z.string().optional(),
   OPENAI_MODEL: z.string().default('gpt-4o-mini'),
+  BASELINE_VERSION_CURRENT: z.string().optional(),
   DEEPGRAM_API_KEY: z.string().optional(),
   DATABASE_URL: z.string().optional(),
   UTTERANCE_END_MS: z.coerce.number().default(1200),

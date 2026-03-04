@@ -4,7 +4,6 @@ import Stripe from 'stripe';
 import { invalidateTenantCacheByTwilioNumber } from '../config/tenant-routing';
 import { dbQuery } from '../db/client';
 import {
-  createClient,
   deactivateClient as setClientCanceled,
   getClientById,
   getClientByOwnerEmail,
@@ -14,6 +13,8 @@ import {
   type Client,
   type SubscriptionStatus,
 } from '../db/queries';
+import { bootstrapTenantFromBaseline } from '../tenants/bootstrap-orchestrator';
+import { bootstrapStateFromSubscriptionStatus } from '../tenants/bootstrap-contract';
 import { isProtectedTwilioPhoneNumber, provisionIncomingNumber, releaseNumber } from '../twilio/provisioning';
 import { sendSms } from '../twilio/service';
 import { env } from '../utils/env';
@@ -58,6 +59,74 @@ function normalizeInitialSubscriptionStatus(value: unknown): SubscriptionStatus 
   if (normalized === 'past_due') return 'past_due';
   if (normalized === 'canceled') return 'canceled';
   return 'trial';
+}
+
+function asHours(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+
+  const output: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    const normalizedKey = asTrimmedString(key);
+    const normalizedValue = asTrimmedString(raw);
+    if (normalizedKey && normalizedValue) {
+      output[normalizedKey] = normalizedValue;
+    }
+  }
+
+  return output;
+}
+
+function asFaqs(value: unknown): Array<{ q: string; a: string }> {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        return null;
+      }
+      const q = asTrimmedString((item as Record<string, unknown>).q);
+      const a = asTrimmedString((item as Record<string, unknown>).a);
+      return q ? { q, a } : null;
+    })
+    .filter((item): item is { q: string; a: string } => Boolean(item));
+}
+
+function asStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => asTrimmedString(item))
+      .filter(Boolean);
+  }
+
+  if (typeof value === 'string') {
+    return value
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  }
+
+  return [];
+}
+
+function extractBusinessDescriptionFromPrompt(prompt: string | null | undefined): string {
+  const source = asTrimmedString(prompt);
+  if (!source) return '';
+
+  const match = source.match(/Business profile for .*?:\n([\s\S]*?)\n\nBusiness hours:/i);
+  return match?.[1]?.trim() || '';
+}
+
+function extractCustomRulesFromPrompt(prompt: string | null | undefined): string[] {
+  const source = asTrimmedString(prompt);
+  if (!source) return [];
+
+  const match = source.match(/Tenant-specific script overrides \(highest priority when conflicting with baseline defaults\):\n([\s\S]*)$/i);
+  if (!match?.[1]) return [];
+
+  return match[1]
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^-\s*/, '').trim())
+    .filter((line) => line.length > 0 && line.toLowerCase() !== 'no tenant-specific custom rules were supplied.');
 }
 
 function extractAreaCodeFromPhoneNumber(value: string | null | undefined): string {
@@ -328,7 +397,10 @@ async function provisionClientInline(clientId: string, options: ProvisionClientO
     );
 
     if (client.subscriptionStatus !== 'active') {
-      const activatedProtectedClient = await updateClient(client.id, { subscriptionStatus: 'active' });
+      const activatedProtectedClient = await updateClient(client.id, {
+        subscriptionStatus: 'active',
+        bootstrapState: 'active',
+      });
       return activatedProtectedClient ?? client;
     }
 
@@ -337,7 +409,10 @@ async function provisionClientInline(clientId: string, options: ProvisionClientO
 
   if (client.twilioNumber && client.twilioNumberSid) {
     if (client.subscriptionStatus !== 'active') {
-      const activatedClient = await updateClient(client.id, { subscriptionStatus: 'active' });
+      const activatedClient = await updateClient(client.id, {
+        subscriptionStatus: 'active',
+        bootstrapState: 'active',
+      });
       return activatedClient ?? client;
     }
     return client;
@@ -353,6 +428,7 @@ async function provisionClientInline(clientId: string, options: ProvisionClientO
     twilioNumberSid: provisionedNumber.sid,
     areaCode: preferredAreaCode || provisionedNumber.areaCode || client.areaCode,
     subscriptionStatus: 'active',
+    bootstrapState: 'active',
   });
 
   if (!updatedClient) {
@@ -446,6 +522,7 @@ async function deactivateClient(clientId: string): Promise<void> {
   await updateClient(client.id, {
     twilioNumber: null,
     twilioNumberSid: null,
+    bootstrapState: 'failed',
   });
 
   invalidateTenantCacheByTwilioNumber(client.twilioNumber);
@@ -504,6 +581,7 @@ async function handleCheckoutSessionCompleted(event: Stripe.Event): Promise<void
     stripeSubscriptionId: subscriptionId || client.stripeSubscriptionId,
     areaCode: metadataAreaCode || client.areaCode,
     subscriptionStatus: baseStatus,
+    bootstrapState: bootstrapStateFromSubscriptionStatus(baseStatus),
     grandfathered: false,
   });
 
@@ -533,6 +611,7 @@ async function handleCheckoutSessionCompleted(event: Stripe.Event): Promise<void
       stripeSubscriptionId: subscription.id,
       areaCode: metadataAreaCode || finalClient.areaCode,
       subscriptionStatus: mappedStatus,
+      bootstrapState: bootstrapStateFromSubscriptionStatus(mappedStatus),
       grandfathered: false,
     });
 
@@ -582,6 +661,7 @@ async function handleSubscriptionUpdated(event: Stripe.Event): Promise<void> {
     stripeCustomerId: customerId,
     stripeSubscriptionId: subscription.id,
     subscriptionStatus: mappedStatus,
+    bootstrapState: bootstrapStateFromSubscriptionStatus(mappedStatus),
     grandfathered: false,
   });
 
@@ -718,27 +798,58 @@ export async function handleStripeCheckout(req: Request, res: Response) {
       });
 
     const existingClient = await getClientByOwnerEmail(email);
-    const client = existingClient
-      ? (await updateClient(existingClient.id, {
-          businessName,
-          ownerName: ownerName || existingClient.ownerName,
-          ownerPhone: ownerPhone || existingClient.ownerPhone,
-          transferNumber: transferNumber || existingClient.transferNumber,
-          areaCode: areaCode || existingClient.areaCode,
-          stripeCustomerId: stripeCustomer.id,
-          subscriptionStatus,
-          grandfathered: false,
-        })) ?? existingClient
-      : await createClient({
-          businessName,
-          ownerEmail: email,
-          ownerName: ownerName || null,
-          ownerPhone: ownerPhone || null,
-          transferNumber: transferNumber || null,
-          areaCode: areaCode || null,
-          stripeCustomerId: stripeCustomer.id,
-          subscriptionStatus,
-        });
+    const businessDescription = asTrimmedString(body.businessDescription || body.business_description)
+      || extractBusinessDescriptionFromPrompt(existingClient?.systemPrompt);
+    const greetingOpening = asTrimmedString(body.greetingOpening || body.greeting_opening);
+    const customBusinessRules = asStringArray(body.customBusinessRules || body.custom_business_rules);
+    const providedHours = asHours(body.hours);
+    const providedFaqs = asFaqs(body.faqs);
+    const hours = Object.keys(providedHours).length > 0
+      ? providedHours
+      : (existingClient?.hours || {});
+    const faqs = providedFaqs.length > 0
+      ? providedFaqs
+      : (existingClient?.faqs || []);
+
+    const bootstrapResult = await bootstrapTenantFromBaseline({
+      request: {
+        source: 'api',
+        tenantKey: existingClient?.tenantKey || undefined,
+        overrides: {
+          business: {
+            businessName,
+            businessDescription,
+          },
+          contact: {
+            ownerName: ownerName || existingClient?.ownerName || null,
+            ownerEmail: email,
+            ownerPhone: ownerPhone || existingClient?.ownerPhone || null,
+            transferNumber: transferNumber || existingClient?.transferNumber || null,
+          },
+          routing: {
+            areaCode: areaCode || existingClient?.areaCode || null,
+          },
+          operations: {
+            hours,
+            faqs,
+          },
+          script: {
+            greetingOpening: greetingOpening || null,
+            customBusinessRules: customBusinessRules.length > 0
+              ? customBusinessRules
+              : extractCustomRulesFromPrompt(existingClient?.systemPrompt),
+          },
+        },
+      },
+      system: {
+        clientId: existingClient?.id,
+        stripeCustomerId: stripeCustomer.id,
+        subscriptionStatus,
+        grandfathered: false,
+      },
+    });
+
+    const client = bootstrapResult.client;
 
     const checkoutSession = await stripe.checkout.sessions.create({
       mode: 'subscription',
@@ -748,13 +859,13 @@ export async function handleStripeCheckout(req: Request, res: Response) {
         trial_period_days: CHECKOUT_TRIAL_DAYS,
         metadata: {
           clientId: client.id,
-          areaCode,
+          areaCode: client.areaCode || '',
         },
       },
       metadata: {
         clientId: client.id,
         businessName,
-        areaCode,
+        areaCode: client.areaCode || '',
       },
       success_url: getCheckoutSuccessUrl(),
       cancel_url: getCheckoutCancelUrl(),
@@ -762,6 +873,10 @@ export async function handleStripeCheckout(req: Request, res: Response) {
 
     if (!checkoutSession.url) {
       return res.status(500).json({ error: 'Stripe checkout session did not return a URL' });
+    }
+
+    if (client.bootstrapState !== 'checkout_created') {
+      await updateClient(client.id, { bootstrapState: 'checkout_created' });
     }
 
     return res.json({ url: checkoutSession.url });

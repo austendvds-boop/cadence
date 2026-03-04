@@ -1,5 +1,6 @@
 import type { TenantConfig } from '../config/tenants';
-import { createClient, getClientByOwnerEmail, updateClient, type ClientFaq, type ClientHours } from '../db/queries';
+import type { ClientFaq, ClientHours } from '../db/queries';
+import { bootstrapTenantFromBaseline } from '../tenants/bootstrap-orchestrator';
 import { sendSms, transferToHuman } from '../twilio/service';
 import { env } from '../utils/env';
 import { logger } from '../utils/logger';
@@ -119,23 +120,6 @@ function toolErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown tool error';
 }
 
-function buildClientSystemPrompt(businessName: string, businessDescription: string, faqs: ClientFaq[]): string {
-  const summary = isProvidedValue(businessDescription)
-    ? businessDescription
-    : 'Provide friendly, concise help to callers and route urgent calls to a human when needed.';
-
-  const faqLines = faqs
-    .filter((faq) => faq.q.trim())
-    .slice(0, 6)
-    .map((faq) => `- ${faq.q.trim()}${faq.a.trim() ? `: ${faq.a.trim()}` : ''}`);
-
-  const faqBlock = faqLines.length > 0
-    ? `\n\nCommon caller questions:\n${faqLines.join('\n')}`
-    : '';
-
-  return `You are Cadence, the AI receptionist for ${businessName}. Be warm, concise, and helpful on phone calls.\n\nBusiness summary: ${summary}${faqBlock}`;
-}
-
 function parseHours(value: string): ClientHours {
   if (!value) return {};
 
@@ -192,7 +176,7 @@ function parseFaqs(value: string): ClientFaq[] {
   return lines.map((line) => ({ q: line, a: '' }));
 }
 
-async function upsertPendingClient(fields: Record<string, string>, callerNumber?: string) {
+async function bootstrapPendingClientFromOnboarding(fields: Record<string, string>, callerNumber?: string) {
   const businessName = firstNonEmpty(getOnboardingField(fields, 'business_name'), 'Cadence Client');
   const ownerName = firstNonEmpty(getOnboardingField(fields, 'owner_name'), 'Cadence Customer');
   const ownerEmail = getOnboardingField(fields, 'owner_email').toLowerCase();
@@ -200,7 +184,10 @@ async function upsertPendingClient(fields: Record<string, string>, callerNumber?
     normalizePhoneNumber(getOnboardingField(fields, 'owner_phone')),
     normalizePhoneNumber(asTrimmedString(callerNumber))
   );
-  const transferNumber = normalizePhoneNumber(getOnboardingField(fields, 'transfer_number'));
+  const transferNumber = firstNonEmpty(
+    normalizePhoneNumber(getOnboardingField(fields, 'transfer_number')),
+    ownerPhone,
+  );
   const areaCode = normalizeAreaCode(getOnboardingField(fields, 'area_code'));
   const businessDescription = getOnboardingField(fields, 'business_description');
   const hours = parseHours(getOnboardingField(fields, 'hours'));
@@ -210,30 +197,40 @@ async function upsertPendingClient(fields: Record<string, string>, callerNumber?
     throw new Error('Owner email is required before completing onboarding.');
   }
 
-  const existingClient = await getClientByOwnerEmail(ownerEmail);
-  const input = {
-    businessName,
-    ownerName: ownerName || null,
-    ownerPhone: ownerPhone || null,
-    transferNumber: transferNumber || null,
-    areaCode: areaCode || null,
-    hours,
-    faqs,
-    greeting: `Hi, thanks for calling ${businessName}! This is Cadence, how can I help you today?`,
-    systemPrompt: buildClientSystemPrompt(businessName, businessDescription, faqs),
-    subscriptionStatus: 'pending' as const,
-  };
-
-  if (existingClient) {
-    const updated = await updateClient(existingClient.id, input);
-    return updated ?? existingClient;
-  }
-
-  return createClient({
-    ...input,
-    ownerEmail,
-    stripeCustomerId: null,
+  const bootstrap = await bootstrapTenantFromBaseline({
+    request: {
+      source: 'onboarding_voice',
+      overrides: {
+        business: {
+          businessName,
+          businessDescription: isProvidedValue(businessDescription) ? businessDescription : '',
+        },
+        contact: {
+          ownerName: ownerName || null,
+          ownerEmail,
+          ownerPhone: ownerPhone || null,
+          transferNumber: transferNumber || null,
+        },
+        routing: {
+          areaCode: areaCode || null,
+        },
+        operations: {
+          hours,
+          faqs,
+        },
+        script: {
+          greetingOpening: null,
+          customBusinessRules: [],
+        },
+      },
+    },
+    system: {
+      subscriptionStatus: 'pending',
+      grandfathered: false,
+    },
   });
+
+  return bootstrap.client;
 }
 
 async function createCheckoutLink(payload: {
@@ -243,6 +240,10 @@ async function createCheckoutLink(payload: {
   ownerPhone: string | null;
   transferNumber: string | null;
   areaCode: string | null;
+  businessDescription: string;
+  hours: ClientHours;
+  faqs: ClientFaq[];
+  customBusinessRules: string[];
 }): Promise<string> {
   const response = await fetch(`${env.BASE_URL}/api/stripe/checkout`, {
     method: 'POST',
@@ -256,6 +257,10 @@ async function createCheckoutLink(payload: {
       ownerPhone: payload.ownerPhone,
       transferNumber: payload.transferNumber,
       areaCode: payload.areaCode,
+      businessDescription: payload.businessDescription,
+      hours: payload.hours,
+      faqs: payload.faqs,
+      customBusinessRules: payload.customBusinessRules,
       subscriptionStatus: 'pending',
     }),
   });
@@ -342,7 +347,7 @@ export async function executeTool(name: string, args: unknown, ctx: ToolContext)
           };
         }
 
-        const pendingClient = await upsertPendingClient(ctx.onboardingFields, ctx.callerNumber);
+        const pendingClient = await bootstrapPendingClientFromOnboarding(ctx.onboardingFields, ctx.callerNumber);
         const checkoutUrl = await createCheckoutLink({
           businessName: pendingClient.businessName,
           ownerName: pendingClient.ownerName,
@@ -350,6 +355,10 @@ export async function executeTool(name: string, args: unknown, ctx: ToolContext)
           ownerPhone: pendingClient.ownerPhone,
           transferNumber: pendingClient.transferNumber,
           areaCode: pendingClient.areaCode,
+          businessDescription: getOnboardingField(ctx.onboardingFields, 'business_description'),
+          hours: pendingClient.hours,
+          faqs: pendingClient.faqs,
+          customBusinessRules: [],
         });
 
         const destination = normalizePhoneNumber(firstNonEmpty(
