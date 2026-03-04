@@ -1,5 +1,14 @@
 # Coder Context
 
+## 2026-03-03 (DB-backed routing migration hardening)
+- Confirmed inbound routing now supports both `POST /incoming-call` and `POST /voice` and passes Twilio `To` into websocket stream params (`toNumber` + `calledNumber`).
+- Confirmed runtime tenant selection path is DB-first (`getClientByTwilioNumber`) with in-memory fallback (`getTenant`) and a 5-minute in-memory cache keyed by Twilio number.
+- Added compatibility export `resolveTenantByTwilioNumber` alongside `resolveTenantForIncomingNumber` to avoid breakage with older imports/docs.
+- Tightened DB-to-tenant mapping so `transfer_number` is carried as `tenant.transferNumber`, while owner notifications still use owner phone when present.
+- Verified cache invalidation still runs on `PATCH /api/clients/:id` for both previous and updated Twilio numbers.
+- Cleaned `package.json` duplicate `db:seed:dvds` key; canonical script is now `tsx scripts/seed-dvds-client.ts`.
+- Build verification: `npm run build` passed (TypeScript compile clean).
+
 ## 2026-03-03 (DB-backed tenant routing + 5-minute cache fallback)
 - Implemented DB-first tenant resolution with legacy in-memory safety net:
   - Added `src/config/tenant-routing.ts` with `resolveTenantByTwilioNumber()`.

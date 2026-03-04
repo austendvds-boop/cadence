@@ -35,7 +35,7 @@ function setCachedTenant(normalizedTwilioNumber: string, tenant: TenantConfig | 
 
 function mapClientToTenant(client: Client, normalizedTwilioNumber: string): TenantConfig {
   const businessName = client.businessName || 'Cadence Client';
-  const transferNumber = normalizePhoneNumber(client.transferNumber || client.ownerPhone || '');
+  const transferNumber = normalizePhoneNumber(client.transferNumber || '');
   const ownerPhone = normalizePhoneNumber(client.ownerPhone || '');
 
   return {
@@ -48,7 +48,8 @@ function mapClientToTenant(client: Client, normalizedTwilioNumber: string): Tena
     greeting:
       client.greeting?.trim()
       || `Hi, thanks for calling ${businessName}! This is Cadence, how can I help you today?`,
-    ownerCell: transferNumber || ownerPhone,
+    ownerCell: ownerPhone || transferNumber,
+    transferNumber: transferNumber || undefined,
     tools: client.toolsAllowed.length > 0 ? client.toolsAllowed : ['transfer_to_human', 'send_sms'],
     ttsModel: client.ttsModel || undefined,
     sttModel: client.sttModel || undefined,
@@ -97,6 +98,8 @@ export async function resolveTenantForIncomingNumber(twilioNumber: string): Prom
   setCachedTenant(normalizedTwilioNumber, tenant ?? null);
   return tenant;
 }
+
+export const resolveTenantByTwilioNumber = resolveTenantForIncomingNumber;
 
 export function invalidateTenantCacheByTwilioNumber(twilioNumber: string | null | undefined): void {
   if (!twilioNumber) return;

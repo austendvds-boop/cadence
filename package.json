@@ -9,7 +9,6 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "db:migrate": "tsx db/migrate.ts",
-    "db:seed:dvds": "tsx db/seed-dvds-client.ts",
     "db:seed:dvds": "tsx scripts/seed-dvds-client.ts"
   },
   "author": "Steve",
