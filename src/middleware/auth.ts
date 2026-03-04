@@ -42,6 +42,14 @@ function getJwtSecret(): string {
   return env.JWT_SECRET;
 }
 
+function getAdminEmail(): string {
+  return (env.ADMIN_EMAIL || 'aust@autom8everything.com').trim().toLowerCase();
+}
+
+function isAdminEmail(email: string): boolean {
+  return email.trim().toLowerCase() === getAdminEmail();
+}
+
 function buildLoginRedirect(req: Request): string {
   const next = req.originalUrl || req.path || '/dashboard';
   return `/login?next=${encodeURIComponent(next)}`;
@@ -74,7 +82,20 @@ async function enforceAuth(
     }
 
     const payload = jwt.verify(token, getJwtSecret()) as SessionTokenPayload;
-    if (payload.type !== 'session' || !payload.client_id || !payload.email) {
+    if (payload.type !== 'session' || !payload.email) {
+      return handleAuthFailure(req, res, 401, 'Invalid session token', failureMode);
+    }
+
+    const requestWithAuth = req as AuthenticatedRequest;
+    const adminSession = isAdminEmail(payload.email);
+
+    if (adminSession) {
+      requestWithAuth.authClientId = payload.client_id || 'admin';
+      requestWithAuth.authEmail = payload.email;
+      return next();
+    }
+
+    if (!payload.client_id) {
       return handleAuthFailure(req, res, 401, 'Invalid session token', failureMode);
     }
 
@@ -83,7 +104,6 @@ async function enforceAuth(
       return handleAuthFailure(req, res, 401, 'Client not found for session', failureMode);
     }
 
-    const requestWithAuth = req as AuthenticatedRequest;
     requestWithAuth.authClientId = client.id;
     requestWithAuth.authEmail = payload.email;
     return next();
@@ -103,7 +123,7 @@ export async function requirePageAuth(req: Request, res: Response, next: NextFun
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
   const requestWithAuth = req as Partial<AuthenticatedRequest>;
   const authEmail = (requestWithAuth.authEmail || '').trim().toLowerCase();
-  const adminEmail = (env.ADMIN_EMAIL || 'aust@autom8everything.com').trim().toLowerCase();
+  const adminEmail = getAdminEmail();
 
   if (!authEmail || authEmail !== adminEmail) {
     return res.status(403).json({ error: 'Forbidden' });

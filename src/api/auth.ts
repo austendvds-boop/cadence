@@ -50,6 +50,14 @@ function getJwtSecret(): string {
   return env.JWT_SECRET;
 }
 
+function getAdminEmail(): string {
+  return (env.ADMIN_EMAIL || 'aust@autom8everything.com').trim().toLowerCase();
+}
+
+function isAdminEmail(email: string): boolean {
+  return email.trim().toLowerCase() === getAdminEmail();
+}
+
 function getTransporter(): Transporter {
   if (smtpTransporter) return smtpTransporter;
 
@@ -183,20 +191,45 @@ export async function handleMagicLinkRequest(req: Request, res: Response) {
       return res.status(400).json({ error: 'email is required' });
     }
 
-    const client = await getClientByOwnerEmail(email);
-    if (!client) {
+    const adminEmail = isAdminEmail(email);
+    const client = adminEmail ? null : await getClientByOwnerEmail(email);
+
+    if (!adminEmail && !client) {
       return res.status(200).json({ ok: true });
     }
 
-    const verifyUrl = buildMagicLink(client.ownerEmail, nextPath);
+    const recipientEmail = client?.ownerEmail || email;
+    const verifyUrl = buildMagicLink(recipientEmail, nextPath);
 
-    await getTransporter().sendMail({
-      from: env.SMTP_FROM || env.SMTP_USER,
-      to: client.ownerEmail,
-      subject: 'Your Cadence login link',
-      text: `Click here to access your dashboard: ${verifyUrl}`,
-      html: `<p>Click here to access your dashboard:</p><p><a href="${verifyUrl}">${verifyUrl}</a></p><p>This link expires in 15 minutes.</p>`,
-    });
+    try {
+      const sendResult = await getTransporter().sendMail({
+        from: env.SMTP_FROM || env.SMTP_USER,
+        to: recipientEmail,
+        subject: 'Your Cadence login link',
+        text: `Click here to access your dashboard: ${verifyUrl}`,
+        html: `<p>Click here to access your dashboard:</p><p><a href="${verifyUrl}">${verifyUrl}</a></p><p>This link expires in 15 minutes.</p>`,
+      });
+
+      logger.info(
+        {
+          email: recipientEmail,
+          messageId: sendResult.messageId,
+          accepted: sendResult.accepted,
+          rejected: sendResult.rejected,
+        },
+        'Magic link email sent'
+      );
+    } catch (sendErr) {
+      console.error('Magic link send failed', {
+        email: recipientEmail,
+        smtpHost: env.SMTP_HOST,
+        smtpPort: env.SMTP_PORT,
+        smtpUser: env.SMTP_USER,
+        error: sendErr,
+      });
+      logger.error({ err: sendErr, email: recipientEmail }, 'Magic link email send failed');
+      throw sendErr;
+    }
 
     return res.status(200).json({ ok: true });
   } catch (err) {
@@ -220,16 +253,18 @@ export async function handleMagicLinkVerify(req: Request, res: Response) {
       return res.status(401).json({ error: 'Invalid magic link token' });
     }
 
+    const isAdminLogin = isAdminEmail(payload.email);
     const client = await getClientByOwnerEmail(payload.email);
-    if (!client) {
+
+    if (!client && !isAdminLogin) {
       return res.status(401).json({ error: 'No client found for token' });
     }
 
     const sessionToken = jwt.sign(
       {
         type: 'session',
-        client_id: client.id,
-        email: client.ownerEmail,
+        client_id: client?.id || 'admin',
+        email: client?.ownerEmail || payload.email,
       },
       getJwtSecret(),
       { expiresIn: SESSION_EXPIRY }
