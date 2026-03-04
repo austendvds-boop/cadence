@@ -18,6 +18,33 @@
   - Added per-call onboarding field state and passed it through tool execution context.
 - Build verification: `npm run build` passed (TypeScript compile clean).
 
+## 2026-03-03 (Neon DB schema + migrations + query layer)
+- Added Postgres migration framework:
+  - `db/migrations/001_init_schema.sql` with full Cadence schema from blueprint (`clients`, `subscriptions`, `stripe_events`, `call_logs`, `magic_link_tokens`) plus trigger function for `updated_at`.
+  - Migration is legacy-safe: handles existing pre-schema `clients` table (renames `phone_number` → `twilio_number`, adds missing columns/defaults/indexes without dropping legacy data).
+  - `db/migrate.ts` migration runner (tracks applied files in `schema_migrations`).
+- Added DB runtime layer:
+  - `src/db/client.ts` (`pg` pool singleton + query helpers).
+  - `src/db/queries.ts` typed DB functions:
+    - `getClientByTwilioNumber`
+    - `getClientById`
+    - `createClient`
+    - `updateClient`
+    - `deactivateClient`
+    - `logCall`
+    - `getCallLogs`
+- Updated config/deps:
+  - Added `pg` dependency and `@types/pg` dev dependency.
+  - Added `db:migrate` npm script.
+  - Added `DATABASE_URL` to `.env.example` and env parsing in `src/utils/env.ts`.
+- Verification:
+  - `npm run build` passed.
+  - Ran migration against Neon using provided `DATABASE_URL`.
+  - Verified new tables exist and `schema_migrations` includes `001_init_schema.sql`.
+- Safety note:
+  - No voice routing handler changes in this batch; existing in-memory tenant routing behavior remains untouched.
+
+
 ## 2026-03-02 (Dedicated SMS sender number for outbound texts)
 - Updated `src/twilio/service.ts`:
   - Changed `sendSms` sender to prefer `env.TWILIO_SMS_NUMBER` and fall back to `env.TWILIO_PHONE_NUMBER`.
