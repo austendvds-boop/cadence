@@ -38,6 +38,24 @@
   - `npm run tenant:rebase -- --owner-email aust@autom8everything.com --apply ...` ✅
   - Re-run of same rebase command returned idempotent no-op (`changed_fields: []`, `idempotent: true`) ✅
   - `npm run tenant:verify -- --owner-email aust@autom8everything.com --expect-script-contains autom8everything.com/onboarding --expect-business-name "Cadence by Autom8"` ✅
+- Git/deploy:
+  - Commit: `17f3118babaf2a65f50b8e3a3e63360ed64e33ee`
+  - Pushed to `origin/main` ✅
+  - Render deploy `dep-d6k58p9aae7s739f6270` reached `live` on `https://cadence-m48n.onrender.com` ✅
+  - Health check: `GET /health` returned `{ "ok": true }` ✅
+- Production smoke (post-deploy):
+  - Live checkout bootstrap test:
+    - `POST https://cadence-m48n.onrender.com/api/stripe/checkout`
+    - test owner email: `smoke+baselineclone-1772639423@autom8everything.com`
+    - checkout URL returned (`https://checkout.stripe.com/...`) ✅
+  - Baseline clone verification for smoke tenant (`npm run tenant:verify ...`) ✅
+    - baseline version/hash matched DVDS baseline
+    - models/tools matched DVDS baseline (`send_sms`, `transfer_to_human`)
+    - script override text preserved in compiled prompt
+    - bootstrap state progressed to `checkout_created`
+  - Autom8 verification (`aust@autom8everything.com`) ✅
+    - baseline version/hash + model/tool parity matched
+    - tenant-specific script override text present (`autom8everything.com/onboarding`)
 
 ## 2026-03-04 (Onboarding pipeline hard reset to stable baseline + health instrumentation)
 - Pulled latest `main` first and kept prior STT 400 safety clamp behavior intact (`src/stt/deepgram.ts`).
