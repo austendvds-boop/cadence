@@ -1,5 +1,25 @@
 # Coder Context
 
+## 2026-03-04 (Call logging to DB + client call log API + Twilio status callback)
+- Added first-class call log APIs in `src/api/calls.ts` and wired routes in `src/index.ts`:
+  - `GET /api/clients/:id/calls` (requires `requireAuth`) with ownership/admin enforcement, pagination (`limit`, `offset`), and default page size `50`.
+  - `POST /api/call-status` receives Twilio call status callbacks and updates `call_logs.duration_seconds` by `call_sid`; if no row exists yet, it resolves the client by Twilio `To` number and upserts a call log row.
+- Extended DB query layer in `src/db/queries.ts`:
+  - Added `upsertCallLog(...)` for idempotent call log writes keyed by `call_sid`.
+  - Added `updateCallDurationBySid(...)` for Twilio callback duration updates.
+  - Added `getCallLogsPage(...)` and retained `getCallLogs(...)` as a convenience wrapper.
+- Updated live call handling in `src/websocket/handler.ts` (additive only):
+  - Tracks call start timestamp and accumulates STT final transcript segments during the call.
+  - On WebSocket close, resolves client id, computes duration estimate, builds a brief transcript summary, and upserts into `call_logs`.
+  - Preserves existing voice behavior and owner SMS summary flow.
+- Updated Twilio provisioning in `src/twilio/provisioning.ts`:
+  - New numbers now include `statusCallback: https://cadence-m48n.onrender.com/api/call-status` and `statusCallbackMethod: POST`.
+- Updated dashboard (`src/api/dashboard.ts`) call log section:
+  - Dashboard now fetches recent calls from `GET /api/clients/:id/calls?limit=50` on load and renders rows client-side.
+- Scope safety:
+  - Voice routing (`/voice`, media stream) remains unchanged in behavior; call logging is additive and non-blocking.
+- Build verification: `npm run build` passed (TypeScript compile clean).
+
 ## 2026-03-04 (Admin client export: JSON list API + CSV download + admin UI controls)
 - Added admin-only client list/export endpoints in `src/api/admin.ts` and wired routes in `src/index.ts`:
   - `GET /api/admin/clients` (requires `requireAuth` + `requireAdmin`) returns all matching clients as JSON with fields:

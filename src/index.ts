@@ -6,6 +6,7 @@ import { create } from 'xmlbuilder2';
 import { handleMagicLinkRequest, handleMagicLinkVerify, renderLoginPage } from './api/auth';
 import { handleAdminClientsExport, handleAdminClientsList, renderAdmin, renderAdminClient } from './api/admin';
 import { handleClientBillingPortal, handlePatchAdminClient, handlePatchOwnClient } from './api/clients';
+import { handleClientCallsList, handleTwilioCallStatus } from './api/calls';
 import { renderDashboard } from './api/dashboard';
 import { handleProvisionRequest, handleStripeCheckout, handleStripeWebhook } from './api/stripe';
 import { requireAdmin, requireAuth, requirePageAuth } from './middleware/auth';
@@ -46,6 +47,7 @@ app.get('/health', (_req, res) => res.json({ ok: true }));
 
 app.post('/api/stripe/checkout', handleStripeCheckout);
 app.post('/api/provision', handleProvisionRequest);
+app.post('/api/call-status', handleTwilioCallStatus);
 
 app.post('/api/auth/magic-link', handleMagicLinkRequest);
 app.get('/api/auth/verify', handleMagicLinkVerify);
@@ -53,6 +55,7 @@ app.get('/login', renderLoginPage);
 
 app.get('/dashboard', requirePageAuth, renderDashboard);
 app.patch('/api/clients/:id', requireAuth, handlePatchOwnClient);
+app.get('/api/clients/:id/calls', requireAuth, handleClientCallsList);
 app.get('/api/clients/:id/billing-portal', requireAuth, handleClientBillingPortal);
 
 app.get('/admin', requirePageAuth, requireAdmin, renderAdmin);

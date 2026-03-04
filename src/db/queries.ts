@@ -105,6 +105,11 @@ export interface LogCallInput {
   toolCalls?: JsonValue | null;
 }
 
+export interface GetCallLogsOptions {
+  limit?: number;
+  offset?: number;
+}
+
 export interface ClientSubscription {
   clientId: string;
   status: string;
@@ -522,8 +527,61 @@ export async function logCall(input: LogCallInput): Promise<CallLog> {
   return mapCallLogRow(result.rows[0]);
 }
 
+export async function upsertCallLog(input: LogCallInput): Promise<CallLog> {
+  const result = await dbQuery<CallLogRow>(
+    `
+      INSERT INTO call_logs (
+        client_id,
+        call_sid,
+        caller_number,
+        duration_seconds,
+        transcript_summary,
+        tool_calls
+      )
+      VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+      ON CONFLICT (call_sid)
+      DO UPDATE SET
+        caller_number = COALESCE(EXCLUDED.caller_number, call_logs.caller_number),
+        duration_seconds = COALESCE(call_logs.duration_seconds, EXCLUDED.duration_seconds),
+        transcript_summary = COALESCE(EXCLUDED.transcript_summary, call_logs.transcript_summary),
+        tool_calls = COALESCE(EXCLUDED.tool_calls, call_logs.tool_calls)
+      RETURNING *
+    `,
+    [
+      input.clientId,
+      input.callSid,
+      input.callerNumber ?? null,
+      input.durationSeconds ?? null,
+      input.transcriptSummary ?? null,
+      input.toolCalls ?? null,
+    ]
+  );
+
+  return mapCallLogRow(result.rows[0]);
+}
+
+export async function updateCallDurationBySid(callSid: string, durationSeconds: number): Promise<CallLog | null> {
+  const result = await dbQuery<CallLogRow>(
+    `
+      UPDATE call_logs
+      SET duration_seconds = $2
+      WHERE call_sid = $1
+      RETURNING *
+    `,
+    [callSid, durationSeconds]
+  );
+
+  const row = result.rows[0];
+  return row ? mapCallLogRow(row) : null;
+}
+
 export async function getCallLogs(clientId: string, limit = 50): Promise<CallLog[]> {
-  const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(500, Math.floor(limit))) : 50;
+  return getCallLogsPage(clientId, { limit, offset: 0 });
+}
+
+export async function getCallLogsPage(clientId: string, options: GetCallLogsOptions = {}): Promise<CallLog[]> {
+  const safeLimit = Number.isFinite(options.limit) ? Math.max(1, Math.min(500, Math.floor(options.limit as number))) : 50;
+  const safeOffset = Number.isFinite(options.offset) ? Math.max(0, Math.floor(options.offset as number)) : 0;
 
   const result = await dbQuery<CallLogRow>(
     `
@@ -531,9 +589,9 @@ export async function getCallLogs(clientId: string, limit = 50): Promise<CallLog
       FROM call_logs
       WHERE client_id = $1
       ORDER BY created_at DESC
-      LIMIT $2
+      LIMIT $2 OFFSET $3
     `,
-    [clientId, safeLimit]
+    [clientId, safeLimit, safeOffset]
   );
 
   return result.rows.map(mapCallLogRow);

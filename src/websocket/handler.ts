@@ -1,6 +1,7 @@
 import { WebSocket } from 'ws';
 import { resolveTenantForIncomingNumber } from '../config/tenant-routing';
-import type { TenantConfig } from '../config/tenants';
+import { normalizePhoneNumber, type TenantConfig } from '../config/tenants';
+import { getClientByTwilioNumber, upsertCallLog } from '../db/queries';
 import { runAgentStream, streamDeepgramTTS, type ChatMsg } from '../llm/openai';
 import { createDeepgramBridge, type DeepgramBridge } from '../stt/deepgram';
 import { executeTool } from '../tools/executor';
@@ -167,6 +168,39 @@ function condenseText(text: string, maxLen = 180): string {
   const compact = text.replace(/\s+/g, ' ').trim();
   if (compact.length <= maxLen) return compact;
   return `${compact.slice(0, Math.max(0, maxLen - 3))}...`;
+}
+
+function buildTranscriptSummary(transcriptSegments: string[], userMessages: string[]): string | null {
+  const source = transcriptSegments.length > 0 ? transcriptSegments : userMessages;
+  if (source.length === 0) return null;
+
+  const condensed = condenseText(source.slice(-4).join(' '), 220);
+  if (!condensed) return null;
+
+  return /[.!?]$/.test(condensed) ? condensed : `${condensed}.`;
+}
+
+function extractClientIdFromTenant(tenant: TenantConfig | undefined): string {
+  if (!tenant?.id?.startsWith('client-')) {
+    return '';
+  }
+
+  return tenant.id.slice('client-'.length);
+}
+
+async function resolveClientIdForCall(tenant: TenantConfig | undefined, toNumber: string): Promise<string> {
+  const tenantClientId = extractClientIdFromTenant(tenant);
+  if (tenantClientId) {
+    return tenantClientId;
+  }
+
+  const normalizedToNumber = normalizePhoneNumber(toNumber || tenant?.twilioNumber || '');
+  if (!normalizedToNumber) {
+    return '';
+  }
+
+  const dbClient = await getClientByTwilioNumber(normalizedToNumber);
+  return dbClient?.id || '';
 }
 
 function countWords(text: string): number {
@@ -354,6 +388,8 @@ export function handleTwilioMedia(ws: WebSocket) {
   const pendingUtterances: string[] = [];
   const history: ChatMsg[] = [];
   const onboardingFields: Record<string, string> = {};
+  const transcriptSegments: string[] = [];
+  let callStartedAtMs: number | null = null;
   let sttUnavailableLogged = false;
 
   function resolvePendingPlaybackMarks(reason: string) {
@@ -639,6 +675,7 @@ export function handleTwilioMedia(ws: WebSocket) {
 
       logger.info({ transcript }, 'STT final');
       finalParts.push(transcript);
+      transcriptSegments.push(transcript);
       if (responding) {
         bargeIn('final_transcript');
       }
@@ -784,6 +821,7 @@ export function handleTwilioMedia(ws: WebSocket) {
       try {
         streamSid = msg.start?.streamSid || '';
         callSid = msg.start?.callSid || '';
+        callStartedAtMs = Date.now();
         callerNumber = getStartParameter(msg.start, ['callerNumber', 'CallerNumber', 'fromNumber', 'From']);
         toNumber = getStartParameter(msg.start, ['toNumber', 'To', 'calledNumber', 'twilioNumber']);
 
@@ -881,15 +919,40 @@ export function handleTwilioMedia(ws: WebSocket) {
     dg?.close();
     dg = null;
 
+    const userMessages = history
+      .filter((m) => m.role === 'user')
+      .map((m) => (typeof m.content === 'string' ? m.content : ''))
+      .filter((m) => m.trim().length > 0);
+
+    const transcriptSummary = buildTranscriptSummary(transcriptSegments, userMessages);
+    const durationSeconds = callStartedAtMs == null
+      ? null
+      : Math.max(0, Math.round((Date.now() - callStartedAtMs) / 1000));
+
+    if (callSid) {
+      try {
+        const clientId = await resolveClientIdForCall(activeTenant, toNumber);
+        if (clientId) {
+          await upsertCallLog({
+            clientId,
+            callSid,
+            callerNumber: callerNumber || null,
+            durationSeconds,
+            transcriptSummary,
+          });
+        } else {
+          logger.warn({ callSid, toNumber, tenantId: activeTenant?.id }, 'Skipping call log DB write because client could not be resolved');
+        }
+      } catch (err) {
+        logger.error({ err, callSid, toNumber, tenantId: activeTenant?.id }, 'Failed to persist call log on websocket close');
+      }
+    }
+
     if (!activeTenant) {
       logger.warn({ toNumber }, 'Skipping call summary SMS because tenant was not resolved');
       return;
     }
 
-    const userMessages = history
-      .filter((m) => m.role === 'user')
-      .map((m) => (typeof m.content === 'string' ? m.content : ''))
-      .filter((m) => m.trim().length > 0);
     const userTurns = userMessages.length;
     const interest = inferInterestLevel(userMessages);
     const topic = inferMainTopic(userMessages);

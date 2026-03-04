@@ -3,6 +3,7 @@ import { logger } from '../utils/logger';
 import { twilioClient } from './service';
 
 const PROVISION_VOICE_WEBHOOK_URL = 'https://cadence-m48n.onrender.com/incoming-call';
+const PROVISION_STATUS_CALLBACK_URL = 'https://cadence-m48n.onrender.com/api/call-status';
 export const PROTECTED_TWILIO_NUMBERS = new Set<string>(['+18773464394', '+14806313993']);
 const DEFAULT_NEARBY_AREA_CODES = ['480', '602', '623', '520', '928'];
 
@@ -144,6 +145,8 @@ async function purchasePhoneNumber(candidatePhoneNumber: string, attemptedAreaCo
     phoneNumber: candidatePhoneNumber,
     voiceUrl: PROVISION_VOICE_WEBHOOK_URL,
     voiceMethod: 'POST',
+    statusCallback: PROVISION_STATUS_CALLBACK_URL,
+    statusCallbackMethod: 'POST',
   });
 
   const normalizedPhoneNumber = normalizePhoneNumber(purchase.phoneNumber || candidatePhoneNumber) || candidatePhoneNumber;

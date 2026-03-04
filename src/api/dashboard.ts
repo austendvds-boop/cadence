@@ -1,6 +1,6 @@
 import type { Request, Response } from 'express';
 import { getAuthenticatedClient } from './clients';
-import { getCallLogs, getSubscriptionByClientId } from '../db/queries';
+import { getSubscriptionByClientId } from '../db/queries';
 import { logger } from '../utils/logger';
 
 function escapeHtml(value: unknown): string {
@@ -18,19 +18,8 @@ function formatDate(value: Date | null | undefined): string {
   return new Date(value).toLocaleString('en-US', { timeZone: 'America/Phoenix' });
 }
 
-function renderCallRows(callLogs: Awaited<ReturnType<typeof getCallLogs>>): string {
-  if (callLogs.length === 0) {
-    return '<tr><td colspan="4">No calls logged yet.</td></tr>';
-  }
-
-  return callLogs.map((call) => {
-    return `<tr>
-      <td>${escapeHtml(formatDate(call.createdAt))}</td>
-      <td>${escapeHtml(call.callerNumber || 'Unknown')}</td>
-      <td>${escapeHtml(call.durationSeconds == null ? '—' : `${call.durationSeconds}s`)}</td>
-      <td>${escapeHtml(call.transcriptSummary || '—')}</td>
-    </tr>`;
-  }).join('');
+function renderInitialCallRows(): string {
+  return '<tr><td colspan="4">Loading recent calls...</td></tr>';
 }
 
 export async function renderDashboard(req: Request, res: Response) {
@@ -40,10 +29,7 @@ export async function renderDashboard(req: Request, res: Response) {
       return res.status(401).send('Unauthorized');
     }
 
-    const [callLogs, subscription] = await Promise.all([
-      getCallLogs(client.id, 50),
-      getSubscriptionByClientId(client.id),
-    ]);
+    const subscription = await getSubscriptionByClientId(client.id);
 
     const page = `<!doctype html>
 <html>
@@ -103,12 +89,68 @@ export async function renderDashboard(req: Request, res: Response) {
       <thead>
         <tr><th>Date</th><th>Caller</th><th>Duration</th><th>Summary</th></tr>
       </thead>
-      <tbody>${renderCallRows(callLogs)}</tbody>
+      <tbody id="call-log-body">${renderInitialCallRows()}</tbody>
     </table>
 
     <script>
       const form = document.getElementById('settings-form');
       const status = document.getElementById('status');
+      const callLogBody = document.getElementById('call-log-body');
+      const clientId = '${escapeHtml(client.id)}';
+
+      function escapeHtmlClient(value) {
+        const text = value == null ? '' : String(value);
+        return text
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/\"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      function formatPhoenixDate(value) {
+        if (!value) return '—';
+        try {
+          return new Date(value).toLocaleString('en-US', { timeZone: 'America/Phoenix' });
+        } catch {
+          return String(value);
+        }
+      }
+
+      function renderCallRows(calls) {
+        if (!Array.isArray(calls) || calls.length === 0) {
+          return '<tr><td colspan="4">No calls logged yet.</td></tr>';
+        }
+
+        return calls.map((call) => {
+          const dateText = escapeHtmlClient(formatPhoenixDate(call.created_at));
+          const callerText = escapeHtmlClient(call.caller_number || 'Unknown');
+          const durationText = escapeHtmlClient(call.duration_seconds == null ? '—' : String(call.duration_seconds) + 's');
+          const summaryText = escapeHtmlClient(call.transcript_summary || '—');
+          return '<tr><td>' + dateText + '</td><td>' + callerText + '</td><td>' + durationText + '</td><td>' + summaryText + '</td></tr>';
+        }).join('');
+      }
+
+      async function loadCallLogs() {
+        callLogBody.innerHTML = '<tr><td colspan="4">Loading recent calls...</td></tr>';
+
+        try {
+          const response = await fetch('/api/clients/' + encodeURIComponent(clientId) + '/calls?limit=50', {
+            headers: { Accept: 'application/json' }
+          });
+
+          const body = await response.json();
+          if (!response.ok) {
+            callLogBody.innerHTML = '<tr><td colspan="4">' + escapeHtmlClient(body.error || 'Failed to load call logs') + '</td></tr>';
+            return;
+          }
+
+          callLogBody.innerHTML = renderCallRows(body.calls);
+        } catch (error) {
+          callLogBody.innerHTML = '<tr><td colspan="4">Failed to load call logs.</td></tr>';
+        }
+      }
+
       form.addEventListener('submit', async (event) => {
         event.preventDefault();
         status.textContent = 'Saving...';
@@ -122,7 +164,7 @@ export async function renderDashboard(req: Request, res: Response) {
         };
 
         try {
-          const response = await fetch('/api/clients/${escapeHtml(client.id)}', {
+          const response = await fetch('/api/clients/' + encodeURIComponent(clientId), {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -139,6 +181,8 @@ export async function renderDashboard(req: Request, res: Response) {
           status.textContent = 'Failed to update';
         }
       });
+
+      loadCallLogs();
     </script>
   </body>
 </html>`;
