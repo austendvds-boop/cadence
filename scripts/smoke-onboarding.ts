@@ -1,4 +1,6 @@
-const ONBOARDING_NUMBER = '+14806313993';
+import { CORE_TENANT_DEFAULTS } from '../src/config/core-tenant-defaults';
+
+const ONBOARDING_NUMBER = CORE_TENANT_DEFAULTS['cadence-onboarding'].twilioNumber;
 const DEFAULT_CHECKOUT_BASE_URL = 'https://cadence-m48n.onrender.com';
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -15,9 +17,8 @@ async function runSmoke(): Promise<void> {
   const checkoutBaseUrl = process.env.SMOKE_CHECKOUT_BASE_URL || process.env.BASE_URL || DEFAULT_CHECKOUT_BASE_URL;
   process.env.BASE_URL = checkoutBaseUrl;
 
-  const [{ resolveTenantForIncomingNumber }, { getTenant }, { getEffectiveDeepgramSttConfig }, { env }, { executeTool }, { closeDbPool }] = await Promise.all([
+  const [{ resolveTenantForIncomingNumber }, { getEffectiveDeepgramSttConfig }, { env }, { executeTool }, { closeDbPool }] = await Promise.all([
     import('../src/config/tenant-routing'),
-    import('../src/config/get-tenant'),
     import('../src/stt/deepgram'),
     import('../src/utils/env'),
     import('../src/tools/executor'),
@@ -27,20 +28,17 @@ async function runSmoke(): Promise<void> {
   const summary: Record<string, unknown> = {};
 
   try {
-    const defaultTenant = getTenant(ONBOARDING_NUMBER);
-    assert(defaultTenant, `Missing in-memory onboarding tenant for ${ONBOARDING_NUMBER}`);
-    assert(defaultTenant.id === 'cadence-onboarding', `Expected cadence-onboarding defaults, got ${defaultTenant.id}`);
-
-    const dvdsTenant = getTenant('+18773464394');
-    assert(dvdsTenant, 'Missing DVDS tenant defaults');
-    assert(defaultTenant.sttModel === dvdsTenant.sttModel, 'Onboarding STT model diverged from DVDS baseline');
-    assert(defaultTenant.ttsModel === dvdsTenant.ttsModel, 'Onboarding TTS model diverged from DVDS baseline');
-
     const resolvedTenant = await resolveTenantForIncomingNumber(ONBOARDING_NUMBER);
     assert(resolvedTenant, `Tenant did not resolve for ${ONBOARDING_NUMBER}`);
+    assert(asString(resolvedTenant.id) === 'cadence-onboarding', `Expected cadence-onboarding tenant id, got ${resolvedTenant.id}`);
     assert(asString(resolvedTenant.twilioNumber) === ONBOARDING_NUMBER, `Resolved tenant number mismatch: ${resolvedTenant.twilioNumber}`);
     assert(resolvedTenant.tools.includes('save_onboarding_field'), 'Resolved tenant missing save_onboarding_field tool');
     assert(resolvedTenant.tools.includes('complete_onboarding'), 'Resolved tenant missing complete_onboarding tool');
+
+    const expectedDvds = CORE_TENANT_DEFAULTS.dvds;
+    assert(resolvedTenant.sttModel === expectedDvds.sttModel, 'Onboarding STT model diverged from DVDS baseline');
+    assert(resolvedTenant.ttsModel === expectedDvds.ttsModel, 'Onboarding TTS model diverged from DVDS baseline');
+
     summary.tenant = {
       id: resolvedTenant.id,
       twilioNumber: resolvedTenant.twilioNumber,
@@ -49,10 +47,10 @@ async function runSmoke(): Promise<void> {
       sttModel: resolvedTenant.sttModel,
     };
     summary.parity = {
-      onboardingSttModel: defaultTenant.sttModel,
-      onboardingTtsModel: defaultTenant.ttsModel,
-      dvdsSttModel: dvdsTenant.sttModel,
-      dvdsTtsModel: dvdsTenant.ttsModel,
+      onboardingSttModel: resolvedTenant.sttModel,
+      onboardingTtsModel: resolvedTenant.ttsModel,
+      dvdsSttModel: expectedDvds.sttModel,
+      dvdsTtsModel: expectedDvds.ttsModel,
     };
 
     const effectiveSttConfig = getEffectiveDeepgramSttConfig({

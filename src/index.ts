@@ -9,6 +9,7 @@ import { handleClientBillingPortal, handlePatchAdminClient, handlePatchOwnClient
 import { handleClientCallsList, handleTwilioCallStatus } from './api/calls';
 import { renderDashboard } from './api/dashboard';
 import { handleProvisionRequest, handleStripeCheckout, handleStripeWebhook } from './api/stripe';
+import { dbQuery } from './db/client';
 import { requireAdmin, requireAuth, requirePageAuth } from './middleware/auth';
 import { env } from './utils/env';
 import { logger } from './utils/logger';
@@ -79,6 +80,26 @@ wss.on('connection', (ws) => {
   handleTwilioMedia(ws as any);
 });
 
-server.listen(env.PORT, () => {
-  logger.info(`Cadence listening on :${env.PORT}`);
-});
+async function logDatabaseConnectivityOnStartup(): Promise<void> {
+  if (!env.DATABASE_URL) {
+    logger.fatal('DATABASE_URL is not configured; DB-backed tenant routing cannot resolve calls.');
+    return;
+  }
+
+  try {
+    await dbQuery('SELECT 1');
+    logger.info('Database connectivity check passed');
+  } catch (err) {
+    logger.fatal({ err }, 'Database connectivity check failed; call routing will fail until DB is reachable.');
+  }
+}
+
+async function startServer(): Promise<void> {
+  await logDatabaseConnectivityOnStartup();
+
+  server.listen(env.PORT, () => {
+    logger.info(`Cadence listening on :${env.PORT}`);
+  });
+}
+
+void startServer();

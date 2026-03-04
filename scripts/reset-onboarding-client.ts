@@ -1,23 +1,17 @@
-import { getTenant } from '../src/config/get-tenant';
+import { CORE_TENANT_DEFAULTS } from '../src/config/core-tenant-defaults';
 import { closeDbPool, withDbClient } from '../src/db/client';
 
-const ONBOARDING_NUMBER = '+14806313993';
-const DVDS_NUMBER = '+18773464394';
-const ONBOARDING_OWNER_EMAIL = 'aust@autom8everything.com';
+const onboardingTenant = CORE_TENANT_DEFAULTS['cadence-onboarding'];
+const dvdsTenant = CORE_TENANT_DEFAULTS.dvds;
 
 async function resetOnboardingClient(): Promise<void> {
-  const onboardingTenant = getTenant(ONBOARDING_NUMBER);
-  if (!onboardingTenant || onboardingTenant.id !== 'cadence-onboarding') {
-    throw new Error(`Unable to load cadence-onboarding defaults for ${ONBOARDING_NUMBER}`);
-  }
-
   await withDbClient(async (client) => {
     await client.query('BEGIN');
 
     try {
       const dvdsBefore = await client.query(
         'SELECT COUNT(*)::int AS count FROM clients WHERE twilio_number = $1',
-        [DVDS_NUMBER]
+        [dvdsTenant.twilioNumber]
       );
 
       const conflictingEmail = await client.query(
@@ -28,19 +22,19 @@ async function resetOnboardingClient(): Promise<void> {
             AND COALESCE(twilio_number, '') <> $2
           LIMIT 1
         `,
-        [ONBOARDING_OWNER_EMAIL, ONBOARDING_NUMBER]
+        [onboardingTenant.ownerEmail, onboardingTenant.twilioNumber]
       );
 
       if ((conflictingEmail.rowCount ?? 0) > 0) {
         const conflict = conflictingEmail.rows[0] as { id: string; twilio_number: string | null };
         throw new Error(
-          `Owner email ${ONBOARDING_OWNER_EMAIL} already used by non-onboarding client ${conflict.id} (${conflict.twilio_number || 'no twilio number'})`
+          `Owner email ${onboardingTenant.ownerEmail} already used by non-onboarding client ${conflict.id} (${conflict.twilio_number || 'no twilio number'})`
         );
       }
 
       const deleted = await client.query(
         'DELETE FROM clients WHERE twilio_number = $1 RETURNING id',
-        [ONBOARDING_NUMBER]
+        [onboardingTenant.twilioNumber]
       );
 
       const inserted = await client.query(
@@ -60,19 +54,22 @@ async function resetOnboardingClient(): Promise<void> {
             grandfathered,
             tts_model,
             stt_model,
-            tools_allowed
+            llm_model,
+            tools_allowed,
+            tenant_key,
+            bootstrap_state
           )
           VALUES (
             $1, $2, $3, $4, $5,
             $6, $7, $8, $9, $10,
-            $11, $12, $13, $14, $15::text[]
+            $11, $12, $13, $14, $15, $16::text[], $17, $18
           )
-          RETURNING id, owner_email, subscription_status, twilio_number, tools_allowed, tts_model, stt_model
+          RETURNING id, owner_email, subscription_status, twilio_number, tools_allowed, tts_model, stt_model, tenant_key
         `,
         [
           onboardingTenant.businessName,
-          'Austen Salazar',
-          ONBOARDING_OWNER_EMAIL,
+          onboardingTenant.ownerName,
+          onboardingTenant.ownerEmail,
           onboardingTenant.ownerCell,
           onboardingTenant.transferNumber || onboardingTenant.ownerCell,
           onboardingTenant.greeting,
@@ -80,43 +77,51 @@ async function resetOnboardingClient(): Promise<void> {
           onboardingTenant.twilioNumber,
           null,
           null,
-          'active',
-          true,
+          onboardingTenant.subscriptionStatus,
+          onboardingTenant.grandfathered,
           onboardingTenant.ttsModel || 'aura-2-thalia-en',
           onboardingTenant.sttModel || 'nova-2',
+          onboardingTenant.llmModel,
           onboardingTenant.tools,
+          onboardingTenant.tenantKey,
+          'active',
         ]
       );
 
       const onboardingRows = await client.query(
         `
-          SELECT id, owner_email, subscription_status, twilio_number
+          SELECT id, owner_email, subscription_status, twilio_number, tenant_key
           FROM clients
           WHERE twilio_number = $1
         `,
-        [ONBOARDING_NUMBER]
+        [onboardingTenant.twilioNumber]
       );
 
       if ((onboardingRows.rowCount ?? 0) !== 1) {
-        throw new Error(`Expected exactly one onboarding row for ${ONBOARDING_NUMBER}, found ${onboardingRows.rowCount ?? 0}`);
+        throw new Error(`Expected exactly one onboarding row for ${onboardingTenant.twilioNumber}, found ${onboardingRows.rowCount ?? 0}`);
       }
 
       const onboardingRow = onboardingRows.rows[0] as {
         owner_email: string;
         subscription_status: string;
+        tenant_key: string | null;
       };
 
-      if (onboardingRow.owner_email.toLowerCase() !== ONBOARDING_OWNER_EMAIL) {
-        throw new Error(`Onboarding owner_email mismatch: expected ${ONBOARDING_OWNER_EMAIL}, got ${onboardingRow.owner_email}`);
+      if (onboardingRow.owner_email.toLowerCase() !== onboardingTenant.ownerEmail.toLowerCase()) {
+        throw new Error(`Onboarding owner_email mismatch: expected ${onboardingTenant.ownerEmail}, got ${onboardingRow.owner_email}`);
       }
 
-      if (onboardingRow.subscription_status !== 'active') {
-        throw new Error(`Onboarding subscription_status mismatch: expected active, got ${onboardingRow.subscription_status}`);
+      if (onboardingRow.subscription_status !== onboardingTenant.subscriptionStatus) {
+        throw new Error(`Onboarding subscription_status mismatch: expected ${onboardingTenant.subscriptionStatus}, got ${onboardingRow.subscription_status}`);
+      }
+
+      if ((onboardingRow.tenant_key || '') !== onboardingTenant.tenantKey) {
+        throw new Error(`Onboarding tenant_key mismatch: expected ${onboardingTenant.tenantKey}, got ${onboardingRow.tenant_key || '<null>'}`);
       }
 
       const dvdsAfter = await client.query(
         'SELECT COUNT(*)::int AS count FROM clients WHERE twilio_number = $1',
-        [DVDS_NUMBER]
+        [dvdsTenant.twilioNumber]
       );
 
       if ((dvdsBefore.rows[0] as { count: number }).count !== (dvdsAfter.rows[0] as { count: number }).count) {
@@ -130,9 +135,10 @@ async function resetOnboardingClient(): Promise<void> {
           {
             deletedCount: deleted.rowCount ?? 0,
             onboardingClientId: (inserted.rows[0] as { id: string }).id,
-            ownerEmail: ONBOARDING_OWNER_EMAIL,
-            subscriptionStatus: 'active',
-            twilioNumber: ONBOARDING_NUMBER,
+            ownerEmail: onboardingTenant.ownerEmail,
+            subscriptionStatus: onboardingTenant.subscriptionStatus,
+            twilioNumber: onboardingTenant.twilioNumber,
+            tenantKey: onboardingTenant.tenantKey,
             verifiedCount: onboardingRows.rowCount,
           },
           null,

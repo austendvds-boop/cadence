@@ -1,10 +1,10 @@
 import { getClientByTwilioNumber, type Client } from '../db/queries';
 import { env } from '../utils/env';
 import { logger } from '../utils/logger';
-import { getTenant } from './get-tenant';
 import { normalizePhoneNumber, type TenantConfig } from './tenants';
 
 const TENANT_CACHE_TTL_MS = 5 * 60 * 1000;
+const CORE_TENANT_KEYS = new Set(['dvds', 'cadence-onboarding']);
 
 type CachedTenant = {
   tenant: TenantConfig | null;
@@ -33,13 +33,22 @@ function setCachedTenant(normalizedTwilioNumber: string, tenant: TenantConfig | 
   });
 }
 
+function resolveTenantId(client: Client): string {
+  const tenantKey = (client.tenantKey || '').trim();
+  if (tenantKey && CORE_TENANT_KEYS.has(tenantKey)) {
+    return tenantKey;
+  }
+
+  return `client-${client.id}`;
+}
+
 function mapClientToTenant(client: Client, normalizedTwilioNumber: string): TenantConfig {
   const businessName = client.businessName || 'Cadence Client';
   const transferNumber = normalizePhoneNumber(client.transferNumber || '');
   const ownerPhone = normalizePhoneNumber(client.ownerPhone || '');
 
   return {
-    id: `client-${client.id}`,
+    id: resolveTenantId(client),
     businessName,
     twilioNumber: normalizedTwilioNumber,
     systemPrompt:
@@ -85,14 +94,7 @@ export async function resolveTenantForIncomingNumber(twilioNumber: string): Prom
   try {
     tenant = await getTenantFromDatabase(normalizedTwilioNumber);
   } catch (err) {
-    logger.warn(
-      { err, toNumber: normalizedTwilioNumber },
-      'DB tenant lookup failed; falling back to in-memory registry'
-    );
-  }
-
-  if (!tenant) {
-    tenant = getTenant(normalizedTwilioNumber);
+    logger.warn({ err, toNumber: normalizedTwilioNumber }, 'DB tenant lookup failed');
   }
 
   setCachedTenant(normalizedTwilioNumber, tenant ?? null);

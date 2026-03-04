@@ -12,8 +12,6 @@ type ToolContext = {
   onboardingFields: Record<string, string>;
 };
 
-const ONBOARDING_TENANT_ID = 'cadence-onboarding';
-const ONBOARDING_TWILIO_NUMBER = '+14806313993';
 const REQUIRED_ONBOARDING_FIELDS = [
   'business_name',
   'owner_name',
@@ -60,10 +58,6 @@ function isE164PhoneNumber(value: string): boolean {
 
 function isToolEnabledForTenant(name: string, tenant: TenantConfig): boolean {
   return tenant.tools.includes(name);
-}
-
-function isOnboardingTenant(tenant: TenantConfig): boolean {
-  return tenant.id === ONBOARDING_TENANT_ID || normalizePhoneNumber(tenant.twilioNumber) === ONBOARDING_TWILIO_NUMBER;
 }
 
 function getOnboardingField(fields: Record<string, string>, key: (typeof REQUIRED_ONBOARDING_FIELDS)[number]): string {
@@ -307,10 +301,6 @@ export async function executeTool(name: string, args: unknown, ctx: ToolContext)
     }
 
     case 'save_onboarding_field': {
-      if (!isOnboardingTenant(ctx.tenant)) {
-        return { ok: false, error: 'Onboarding fields are only available for onboarding calls.' };
-      }
-
       const parsedArgs = asRecord(args);
       const field = asTrimmedString(parsedArgs.field);
       const rawValue = asTrimmedString(parsedArgs.value);
@@ -332,10 +322,6 @@ export async function executeTool(name: string, args: unknown, ctx: ToolContext)
     }
 
     case 'complete_onboarding': {
-      if (!isOnboardingTenant(ctx.tenant)) {
-        return { ok: false, error: 'Onboarding completion is only available for onboarding calls.' };
-      }
-
       try {
         const missingFields = listMissingOnboardingFields(ctx.onboardingFields);
         if (missingFields.length > 0) {
