@@ -7,7 +7,9 @@ import { logger } from '../utils/logger';
 
 const MAGIC_LINK_EXPIRY = '15m';
 const SESSION_EXPIRY = '7d';
+const REMEMBER_SESSION_EXPIRY = '30d';
 const SESSION_COOKIE_NAME = 'cadence_token';
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 type MagicLinkTokenPayload = {
   type: 'magic-link';
@@ -24,6 +26,22 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function asTrimmedString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function asBoolean(value: unknown, defaultValue = false): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value === 1;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') {
+      return true;
+    }
+    if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') {
+      return false;
+    }
+  }
+
+  return defaultValue;
 }
 
 function normalizeNextPath(value: unknown): string {
@@ -78,7 +96,7 @@ function getTransporter(): Transporter {
   return smtpTransporter;
 }
 
-function buildMagicLink(email: string, nextPath: string): string {
+function buildMagicLink(email: string, nextPath: string, rememberMe: boolean): string {
   const token = jwt.sign(
     {
       type: 'magic-link',
@@ -92,6 +110,7 @@ function buildMagicLink(email: string, nextPath: string): string {
   verifyUrl.searchParams.set('token', token);
   verifyUrl.searchParams.set('redirect', '1');
   verifyUrl.searchParams.set('next', nextPath);
+  verifyUrl.searchParams.set('remember', rememberMe ? '1' : '0');
   return verifyUrl.toString();
 }
 
@@ -122,8 +141,11 @@ export function renderLoginPage(req: Request, res: Response) {
     .card { width: 100%; max-width: 420px; background: #111827; border: 1px solid #1f2937; border-radius: 16px; padding: 24px; box-sizing: border-box; }
     h1 { margin: 0 0 10px; font-size: 24px; }
     p { margin: 0 0 16px; color: #9ca3af; }
-    label { display: block; margin-bottom: 8px; font-size: 14px; }
-    input { width: 100%; box-sizing: border-box; border: 1px solid #374151; background: #0f172a; color: #f3f4f6; border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+    .field-label { display: block; margin-bottom: 8px; font-size: 14px; }
+    input[type="email"] { width: 100%; box-sizing: border-box; border: 1px solid #374151; background: #0f172a; color: #f3f4f6; border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+    .remember-row { display: flex; align-items: center; gap: 10px; margin: 4px 0 14px; }
+    .remember-row input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: #2563eb; }
+    .remember-row label { margin: 0; font-size: 14px; color: #d1d5db; }
     button { width: 100%; border: 0; border-radius: 10px; padding: 12px; font-weight: 600; cursor: pointer; background: #2563eb; color: white; }
     .message { margin-top: 12px; font-size: 14px; min-height: 20px; }
     .ok { color: #4ade80; }
@@ -136,8 +158,12 @@ export function renderLoginPage(req: Request, res: Response) {
       <h1>Sign in to Cadence</h1>
       <p>Enter your email and we’ll send a secure magic link.</p>
       <form id="magic-link-form">
-        <label for="email">Email</label>
+        <label class="field-label" for="email">Email</label>
         <input id="email" name="email" type="email" autocomplete="email" required />
+        <div class="remember-row">
+          <input id="remember_me" name="remember_me" type="checkbox" checked />
+          <label for="remember_me">Remember me for 30 days</label>
+        </div>
         <input id="next" name="next" type="hidden" value="${escapeHtml(nextPath)}" />
         <button type="submit">Send magic link</button>
       </form>
@@ -155,12 +181,13 @@ export function renderLoginPage(req: Request, res: Response) {
 
       const email = document.getElementById('email').value.trim();
       const next = document.getElementById('next').value.trim();
+      const rememberMe = document.getElementById('remember_me').checked;
 
       try {
         const response = await fetch('/api/auth/magic-link', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, next }),
+          body: JSON.stringify({ email, next, remember_me: rememberMe }),
         });
 
         if (!response.ok) {
@@ -186,6 +213,7 @@ export async function handleMagicLinkRequest(req: Request, res: Response) {
     const body = asRecord(req.body);
     const email = asTrimmedString(body.email).toLowerCase();
     const nextPath = normalizeNextPath(body.next || body.next_path || req.query.next);
+    const rememberMe = asBoolean(body.remember_me, false);
 
     if (!email) {
       return res.status(400).json({ error: 'email is required' });
@@ -199,7 +227,7 @@ export async function handleMagicLinkRequest(req: Request, res: Response) {
     }
 
     const recipientEmail = client?.ownerEmail || email;
-    const verifyUrl = buildMagicLink(recipientEmail, nextPath);
+    const verifyUrl = buildMagicLink(recipientEmail, nextPath, rememberMe);
 
     try {
       const sendResult = await getTransporter().sendMail({
@@ -243,6 +271,7 @@ export async function handleMagicLinkVerify(req: Request, res: Response) {
     const token = asTrimmedString(req.query.token);
     const shouldRedirect = asTrimmedString(req.query.redirect).toLowerCase();
     const nextPath = normalizeNextPath(req.query.next);
+    const rememberSession = asTrimmedString(req.query.remember) === '1';
 
     if (!token) {
       return res.status(400).json({ error: 'token is required' });
@@ -267,14 +296,14 @@ export async function handleMagicLinkVerify(req: Request, res: Response) {
         email: client?.ownerEmail || payload.email,
       },
       getJwtSecret(),
-      { expiresIn: SESSION_EXPIRY }
+      { expiresIn: rememberSession ? REMEMBER_SESSION_EXPIRY : SESSION_EXPIRY }
     );
 
     res.cookie(SESSION_COOKIE_NAME, sessionToken, {
       httpOnly: true,
       sameSite: 'lax',
       secure: env.BASE_URL.startsWith('https://'),
-      maxAge: 7 * 24 * 60 * 60 * 1000,
+      maxAge: (rememberSession ? 30 : 7) * ONE_DAY_MS,
       path: '/',
     });
 
