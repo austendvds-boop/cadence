@@ -1,5 +1,39 @@
 # Coder Context
 
+## 2026-03-03 (Stripe checkout + webhook billing integration)
+- Installed Stripe SDK dependency (`stripe`) and updated lockfile.
+- Created live Stripe catalog entries:
+  - Product: `Cadence AI Voice Agent` (`prod_U5IpNbrFPRzLlt`)
+  - Monthly recurring price: `$199` (`price_1T78E6BxWKNs26XEDy0SFBaY`)
+  - Trial behavior is enforced at checkout session creation (`trial_period_days: 7`).
+- Added `src/api/stripe.ts` with:
+  - `POST /api/stripe/checkout`
+    - Accepts `email` + `businessName` (also accepts snake_case/clientEmail aliases).
+    - Creates/fetches Stripe customer.
+    - Creates/updates pending client row in DB.
+    - Creates Stripe Checkout Session for subscription + 7-day trial.
+    - Returns checkout `url`.
+  - `POST /api/stripe/webhook`
+    - Verifies Stripe signature using `STRIPE_WEBHOOK_SECRET` (falls back to provided `whsec_...` secret).
+    - Handles:
+      - `checkout.session.completed` (stores stripe ids, upserts subscription row, triggers inline provisioning hook)
+      - `customer.subscription.updated` (syncs subscription + client status)
+      - `customer.subscription.deleted` (deactivates client)
+      - `invoice.payment_failed` (marks subscription past_due and deactivates client)
+    - Deduplicates events using `stripe_events` table.
+  - `POST /api/provision`
+    - Internal provisioning trigger endpoint used by Stripe flow (currently acknowledges trigger and logs; safe no-op for voice routing).
+- Updated `src/index.ts` route wiring:
+  - Stripe webhook route uses `express.raw({ type: 'application/json' })` before JSON parsing to preserve signature verification integrity.
+- Updated DB query layer (`src/db/queries.ts`):
+  - Added `getClientByOwnerEmail`, `getClientByStripeCustomerId`, `getClientByStripeSubscriptionId`.
+- Updated env handling and sample env:
+  - Added `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_ID`, `STRIPE_CHECKOUT_SUCCESS_URL`, `STRIPE_CHECKOUT_CANCEL_URL`.
+  - `.env.example` now includes `STRIPE_PRICE_ID=price_1T78E6BxWKNs26XEDy0SFBaY`.
+- Safety note:
+  - No changes were made to Twilio media stream voice routing logic (`/voice` + websocket handler remain intact).
+- Build verification: `npm run build` passed (TypeScript compile clean).
+
 ## 2026-03-03 (Cadence onboarding tenant + onboarding tools)
 - Purchased Twilio onboarding number: `+14806313993` (`PN5c3815a122aab4bf631f0312a5bf8c02`).
 - Set onboarding number voice webhook to `https://cadence-m48n.onrender.com/voice` (POST).

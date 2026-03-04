@@ -2,16 +2,23 @@ import express from 'express';
 import http from 'http';
 import { WebSocketServer } from 'ws';
 import { create } from 'xmlbuilder2';
+import { handleProvisionRequest, handleStripeCheckout, handleStripeWebhook } from './api/stripe';
 import { env } from './utils/env';
 import { logger } from './utils/logger';
 import { handleTwilioMedia } from './websocket/handler';
 
 const app = express();
 app.use(express.urlencoded({ extended: true }));
+
+// Stripe webhook signature verification requires raw body bytes.
+app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), handleStripeWebhook);
+
 app.use(express.json());
 app.use(express.static('public'));
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
+app.post('/api/stripe/checkout', handleStripeCheckout);
+app.post('/api/provision', handleProvisionRequest);
 
 app.post('/voice', (req, res) => {
   const wsUrl = env.TWILIO_WEBSOCKET_URL || `${env.BASE_URL.replace('http', 'ws')}/media-stream`;

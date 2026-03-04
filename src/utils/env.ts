@@ -19,6 +19,11 @@ const EnvSchema = z.object({
   TWILIO_PHONE_NUMBER: z.string().optional(),
   TWILIO_SMS_NUMBER: z.string().optional(),
   TWILIO_WEBSOCKET_URL: z.string().optional(),
+  STRIPE_SECRET_KEY: z.string().optional(),
+  STRIPE_WEBHOOK_SECRET: z.string().optional(),
+  STRIPE_PRICE_ID: z.string().optional(),
+  STRIPE_CHECKOUT_SUCCESS_URL: z.string().optional(),
+  STRIPE_CHECKOUT_CANCEL_URL: z.string().optional(),
   AUSTEN_CELL_NUMBER: z.string().optional(),
   LOG_LEVEL: z.string().default('info'),
 });

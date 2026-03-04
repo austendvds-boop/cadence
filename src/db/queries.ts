@@ -219,6 +219,51 @@ export async function getClientByTwilioNumber(twilioNumber: string): Promise<Cli
   return row ? mapClientRow(row) : null;
 }
 
+export async function getClientByOwnerEmail(ownerEmail: string): Promise<Client | null> {
+  const result = await dbQuery<ClientRow>(
+    `
+      SELECT *
+      FROM clients
+      WHERE lower(owner_email) = lower($1)
+      LIMIT 1
+    `,
+    [ownerEmail]
+  );
+
+  const row = result.rows[0];
+  return row ? mapClientRow(row) : null;
+}
+
+export async function getClientByStripeCustomerId(stripeCustomerId: string): Promise<Client | null> {
+  const result = await dbQuery<ClientRow>(
+    `
+      SELECT *
+      FROM clients
+      WHERE stripe_customer_id = $1
+      LIMIT 1
+    `,
+    [stripeCustomerId]
+  );
+
+  const row = result.rows[0];
+  return row ? mapClientRow(row) : null;
+}
+
+export async function getClientByStripeSubscriptionId(stripeSubscriptionId: string): Promise<Client | null> {
+  const result = await dbQuery<ClientRow>(
+    `
+      SELECT *
+      FROM clients
+      WHERE stripe_subscription_id = $1
+      LIMIT 1
+    `,
+    [stripeSubscriptionId]
+  );
+
+  const row = result.rows[0];
+  return row ? mapClientRow(row) : null;
+}
+
 export async function getClientById(clientId: string): Promise<Client | null> {
   const result = await dbQuery<ClientRow>(
     `
