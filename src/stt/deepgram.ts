@@ -32,8 +32,27 @@ type DeepgramMessage = {
 const MAX_RECONNECT_ATTEMPTS = 3;
 const RECONNECT_DELAYS_MS = [1000, 2000, 4000] as const;
 const DEFAULT_DEEPGRAM_STT_MODEL = 'nova-2';
+const MIN_UTTERANCE_END_MS = 1000;
+const MIN_ENDPOINTING_MS = 10;
 
 function getDeepgramListenUrl(model: string): string {
+  const utteranceEndMs = Math.max(MIN_UTTERANCE_END_MS, env.UTTERANCE_END_MS);
+  const endpointingMs = Math.max(MIN_ENDPOINTING_MS, env.ENDPOINTING_MS);
+
+  if (utteranceEndMs !== env.UTTERANCE_END_MS) {
+    logger.warn(
+      { configured: env.UTTERANCE_END_MS, applied: utteranceEndMs },
+      'UTTERANCE_END_MS too low for Deepgram live WebSocket; clamping to safe minimum'
+    );
+  }
+
+  if (endpointingMs !== env.ENDPOINTING_MS) {
+    logger.warn(
+      { configured: env.ENDPOINTING_MS, applied: endpointingMs },
+      'ENDPOINTING_MS too low; clamping to Deepgram-safe minimum'
+    );
+  }
+
   const params = new URLSearchParams({
     model,
     language: 'en-US',
@@ -43,8 +62,8 @@ function getDeepgramListenUrl(model: string): string {
     punctuate: 'true',
     smart_format: 'true',
     interim_results: 'true',
-    utterance_end_ms: String(env.UTTERANCE_END_MS),
-    endpointing: String(env.ENDPOINTING_MS),
+    utterance_end_ms: String(utteranceEndMs),
+    endpointing: String(endpointingMs),
     vad_events: 'true',
   });
 
