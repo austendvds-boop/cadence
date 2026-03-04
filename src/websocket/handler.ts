@@ -5,7 +5,21 @@ import { runAgentStream, streamDeepgramTTS, type ChatMsg } from '../llm/openai';
 import { executeTool } from '../tools/executor';
 import { sendSms } from '../twilio/service';
 
-type TwilioMsg = { event: string; streamSid?: string; start?: any; media?: { payload: string } };
+type TwilioStartMessage = {
+  streamSid?: string;
+  callSid?: string;
+  customParameters?: {
+    callerNumber?: string;
+  };
+};
+
+type TwilioMsg = {
+  event: string;
+  streamSid?: string;
+  start?: TwilioStartMessage;
+  media?: { payload: string };
+  mark?: { name?: string };
+};
 
 function parseJsonSafe<T>(raw: string, source: string): T | null {
   try {
@@ -43,7 +57,9 @@ function isAbortError(err: unknown): boolean {
   return false;
 }
 
-const CHIME_FRAME_SAMPLES = 160; // 20ms @ 8kHz
+const TWILIO_MULAW_BYTES_PER_SECOND = 8000;
+const TWILIO_MEDIA_FRAME_BYTES = 160; // 20ms @ 8kHz @ 8-bit mulaw
+const CHIME_FRAME_SAMPLES = TWILIO_MEDIA_FRAME_BYTES;
 
 function encodePcm16ToMuLaw(sample: number): number {
   const BIAS = 0x84;
@@ -137,6 +153,12 @@ function condenseText(text: string, maxLen = 180): string {
   const compact = text.replace(/\s+/g, ' ').trim();
   if (compact.length <= maxLen) return compact;
   return `${compact.slice(0, Math.max(0, maxLen - 3))}...`;
+}
+
+function countWords(text: string): number {
+  const trimmed = text.trim();
+  if (!trimmed) return 0;
+  return trimmed.split(/\s+/).filter(Boolean).length;
 }
 
 function inferInterestLevel(userMessages: string[]): 'High' | 'Medium' | 'Low' {
@@ -298,13 +320,147 @@ export function handleTwilioMedia(ws: WebSocket) {
   let speaking = false;
   let isSpeaking = false;
   let introPlaying = false;
-  let introTimer: ReturnType<typeof setTimeout> | null = null;
   let responding = false;
   let drainingUtterances = false;
   let activeLlmAbort: AbortController | null = null;
   let activeTtsAbort: AbortController | null = null;
+  let markCounter = 0;
+  const pendingPlaybackMarks = new Map<
+    string,
+    {
+      bytesSent: number;
+      expectedDurationMs: number;
+      timeout: ReturnType<typeof setTimeout>;
+      resolve: () => void;
+    }
+  >();
   const pendingUtterances: string[] = [];
   const history: ChatMsg[] = [];
+
+  function resolvePendingPlaybackMarks(reason: string) {
+    for (const [markName, pending] of Array.from(pendingPlaybackMarks.entries())) {
+      clearTimeout(pending.timeout);
+      pendingPlaybackMarks.delete(markName);
+      pending.resolve();
+      logger.debug({ markName, reason }, 'resolved pending Twilio playback mark');
+    }
+  }
+
+  function waitForTwilioPlaybackMark(
+    markName: string,
+    bytesSent: number,
+    expectedDurationMs: number,
+    remainingPlaybackMs: number,
+    signal: AbortSignal
+  ): Promise<void> {
+    if (!streamSid || signal.aborted) return Promise.resolve();
+
+    const graceMs = Math.max(20, Math.ceil(expectedDurationMs * 0.1));
+    const timeoutMs = Math.max(20, Math.ceil(remainingPlaybackMs + graceMs));
+
+    return new Promise<void>((resolve) => {
+      let settled = false;
+
+      const finish = (source: 'mark' | 'timeout' | 'abort') => {
+        if (settled) return;
+        settled = true;
+
+        signal.removeEventListener('abort', onAbort);
+        const pending = pendingPlaybackMarks.get(markName);
+        if (pending) {
+          clearTimeout(pending.timeout);
+          pendingPlaybackMarks.delete(markName);
+        }
+
+        if (source === 'timeout') {
+          logger.warn(
+            { markName, bytesSent, expectedDurationMs, remainingPlaybackMs, timeoutMs },
+            'Twilio mark timeout; falling back to byte-count playback duration'
+          );
+        }
+
+        resolve();
+      };
+
+      const onAbort = () => finish('abort');
+      signal.addEventListener('abort', onAbort, { once: true });
+
+      const timeout = setTimeout(() => finish('timeout'), timeoutMs);
+      pendingPlaybackMarks.set(markName, {
+        bytesSent,
+        expectedDurationMs,
+        timeout,
+        resolve: () => finish('mark')
+      });
+
+      safeSend(ws, JSON.stringify({ event: 'mark', streamSid, mark: { name: markName } }), 'tts_playback_mark_send');
+    });
+  }
+
+  function createPacedMediaSender(signal: AbortSignal) {
+    let carryover = Buffer.alloc(0);
+    let sendChain: Promise<void> = Promise.resolve();
+    let nextFrameAt = Date.now();
+    let bytesSent = 0;
+    let firstFrameSentAt: number | null = null;
+
+    const queueFrame = (frame: Buffer) => {
+      sendChain = sendChain.then(async () => {
+        if (signal.aborted) return;
+
+        const now = Date.now();
+        const waitMs = Math.max(0, nextFrameAt - now);
+        if (waitMs > 0) {
+          await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
+          if (signal.aborted) return;
+        }
+
+        safeSend(
+          ws,
+          JSON.stringify({ event: 'media', streamSid, media: { payload: frame.toString('base64') } }),
+          'tts_stream_media'
+        );
+
+        const sendTime = Date.now();
+        if (firstFrameSentAt === null) {
+          firstFrameSentAt = sendTime;
+          nextFrameAt = sendTime;
+        }
+
+        bytesSent += frame.length;
+        const frameDurationMs = (frame.length / TWILIO_MULAW_BYTES_PER_SECOND) * 1000;
+        nextFrameAt = Math.max(nextFrameAt + frameDurationMs, sendTime);
+      });
+    };
+
+    return {
+      push(base64Payload: string) {
+        if (signal.aborted || !base64Payload) return;
+
+        const incoming = Buffer.from(base64Payload, 'base64');
+        if (incoming.length === 0) return;
+
+        const chunk = carryover.length ? Buffer.concat([carryover, incoming]) : incoming;
+        let offset = 0;
+
+        while (offset + TWILIO_MEDIA_FRAME_BYTES <= chunk.length) {
+          queueFrame(chunk.subarray(offset, offset + TWILIO_MEDIA_FRAME_BYTES));
+          offset += TWILIO_MEDIA_FRAME_BYTES;
+        }
+
+        carryover = chunk.subarray(offset);
+      },
+      async flush() {
+        if (!signal.aborted && carryover.length > 0) {
+          queueFrame(carryover);
+          carryover = Buffer.alloc(0);
+        }
+
+        await sendChain;
+        return { bytesSent, firstFrameSentAt };
+      }
+    };
+  }
 
   function abortActiveResponse(reason: string) {
     let aborted = false;
@@ -329,6 +485,7 @@ export function handleTwilioMedia(ws: WebSocket) {
     }
 
     if (aborted) {
+      resolvePendingPlaybackMarks(reason);
       logger.info({ reason }, 'barge-in: aborted in-flight response');
     }
   }
@@ -382,11 +539,13 @@ export function handleTwilioMedia(ws: WebSocket) {
     });
   }
 
-  async function speakFromStream(textStream: AsyncIterable<string>) {
+  async function speakFromStream(textStream: AsyncIterable<string>, markLabel = 'tts') {
     const controller = new AbortController();
     activeTtsAbort?.abort();
     activeTtsAbort = controller;
     isSpeaking = false;
+
+    const pacedSender = createPacedMediaSender(controller.signal);
 
     try {
       await streamDeepgramTTS(
@@ -398,12 +557,27 @@ export function handleTwilioMedia(ws: WebSocket) {
             speaking = true;
           }
           if (!isSpeaking || !speaking) return;
-          safeSend(ws, JSON.stringify({ event: 'media', streamSid, media: { payload } }), 'tts_stream_media');
+          pacedSender.push(payload);
         },
         controller.signal
       );
-    } catch (err: any) {
-      if (err?.name !== 'AbortError') throw err;
+
+      const { bytesSent, firstFrameSentAt } = await pacedSender.flush();
+      if (!controller.signal.aborted && bytesSent > 0 && firstFrameSentAt !== null) {
+        const expectedDurationMs = (bytesSent / TWILIO_MULAW_BYTES_PER_SECOND) * 1000;
+        const elapsedMs = Date.now() - firstFrameSentAt;
+        const remainingPlaybackMs = Math.max(0, expectedDurationMs - elapsedMs);
+        const markName = `${markLabel}-${Date.now()}-${++markCounter}`;
+
+        logger.info(
+          { markName, bytesSent, expectedDurationMs, remainingPlaybackMs },
+          'waiting for Twilio playback completion mark'
+        );
+
+        await waitForTwilioPlaybackMark(markName, bytesSent, expectedDurationMs, remainingPlaybackMs, controller.signal);
+      }
+    } catch (err: unknown) {
+      if (!isAbortError(err)) throw err;
     } finally {
       controller.abort();
       if (activeTtsAbort === controller) activeTtsAbort = null;
@@ -413,13 +587,23 @@ export function handleTwilioMedia(ws: WebSocket) {
   }
 
   async function speakText(text: string) {
-    await speakFromStream(oneChunkStream(text));
+    await speakFromStream(oneChunkStream(text), 'tts');
   }
 
   const dg = createDeepgramBridge({
     onInterim: (t) => {
-      if (introPlaying) return;
-      if (responding && t.trim().split(/\s+/).length > 2) {
+      if (introPlaying || !responding) return;
+
+      const transcript = t.trim();
+      if (!transcript) return;
+
+      const words = countWords(transcript);
+      if ((isSpeaking || speaking) && words < 2) {
+        logger.debug({ transcript }, 'ignoring short interim transcript during playback');
+        return;
+      }
+
+      if (words > 0) {
         bargeIn('interim_transcript');
       }
     },
@@ -427,6 +611,13 @@ export function handleTwilioMedia(ws: WebSocket) {
       const transcript = t.trim();
       if (!transcript) return;
       if (introPlaying) return;
+
+      const words = countWords(transcript);
+      if ((isSpeaking || speaking) && words < 2) {
+        logger.debug({ transcript }, 'ignoring short final transcript during playback');
+        return;
+      }
+
       logger.info({ transcript }, 'STT final');
       finalParts.push(transcript);
       if (responding) {
@@ -560,8 +751,8 @@ export function handleTwilioMedia(ws: WebSocket) {
 
     if (msg.event === 'start') {
       try {
-        streamSid = msg.start?.streamSid;
-        callSid = msg.start?.callSid;
+        streamSid = msg.start?.streamSid || '';
+        callSid = msg.start?.callSid || '';
         callerNumber = msg.start?.customParameters?.callerNumber || '';
         logger.info({ callerNumber }, 'caller number from stream params');
         if (callerNumber) {
@@ -576,34 +767,37 @@ export function handleTwilioMedia(ws: WebSocket) {
         history.push({ role: 'assistant', content: greeting });
 
         introPlaying = true;
-        speaking = true;
-        isSpeaking = true;
-        const streamStart = Date.now();
-        let chunkCount = 0;
-        await streamDeepgramTTS(oneChunkStream(greeting), (payload) => {
-          if (!introPlaying) return;
-          safeSend(ws, JSON.stringify({ event: 'media', streamSid, media: { payload } }), 'greeting_media');
-          chunkCount++;
-        });
-        const streamDuration = Date.now() - streamStart;
-        const remainingPlayback = Math.max(chunkCount * 20 - streamDuration + 800, 800);
-        logger.info({ chunks: chunkCount, streamDurationMs: streamDuration, remainingPlayback }, 'greeting sent');
-        speaking = false;
-        await new Promise<void>(r => {
-          introTimer = setTimeout(() => {
-            introPlaying = false;
-            isSpeaking = false;
-            finalParts = [];
-            introTimer = null;
-            r();
-          }, remainingPlayback);
-        });
+        try {
+          await speakFromStream(oneChunkStream(greeting), 'intro');
+        } finally {
+          introPlaying = false;
+          finalParts = [];
+        }
       } catch (err) {
         logger.error({ err }, 'start event error');
         ws.close();
       }
     }
+    if (msg.event === 'mark') {
+      const markName = msg.mark?.name;
+      if (!markName) return;
+
+      const pending = pendingPlaybackMarks.get(markName);
+      if (!pending) {
+        logger.debug({ markName }, 'received unmanaged Twilio mark');
+        return;
+      }
+
+      pending.resolve();
+      logger.info(
+        { markName, bytesSent: pending.bytesSent, expectedDurationMs: pending.expectedDurationMs },
+        'Twilio playback mark received'
+      );
+      return;
+    }
+
     if (msg.event === 'media' && msg.media?.payload) {
+      // Keep STT hot even while Cadence is speaking so barge-in can be detected.
       if (!introPlaying) {
         dg.sendMulaw(Buffer.from(msg.media.payload, 'base64'));
       }
@@ -618,11 +812,6 @@ export function handleTwilioMedia(ws: WebSocket) {
   });
 
   ws.on('close', async () => {
-    if (introTimer) {
-      clearTimeout(introTimer);
-      introTimer = null;
-    }
-
     introPlaying = false;
     pendingUtterances.length = 0;
     abortActiveResponse('websocket_close');
