@@ -4,6 +4,7 @@ import nodemailer, { type Transporter } from 'nodemailer';
 import { getClientByOwnerEmail } from '../db/queries';
 import { env } from '../utils/env';
 import { logger } from '../utils/logger';
+import { escapeHtml, renderAppShell } from './ui-shell';
 
 const MAGIC_LINK_EXPIRY = '15m';
 const SESSION_EXPIRY = '7d';
@@ -50,15 +51,6 @@ function normalizeNextPath(value: unknown): string {
     return '/dashboard';
   }
   return raw;
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
 }
 
 function getJwtSecret(): string {
@@ -129,55 +121,38 @@ function toPublicClient(client: Awaited<ReturnType<typeof getClientByOwnerEmail>
 export function renderLoginPage(req: Request, res: Response) {
   const nextPath = normalizeNextPath(req.query.next);
 
-  res.type('html').send(`<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Cadence Login</title>
-  <style>
-    body { font-family: Inter, system-ui, -apple-system, sans-serif; margin: 0; background: #0b1020; color: #e5e7eb; }
-    .wrap { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
-    .card { width: 100%; max-width: 420px; background: #111827; border: 1px solid #1f2937; border-radius: 16px; padding: 24px; box-sizing: border-box; }
-    h1 { margin: 0 0 10px; font-size: 24px; }
-    p { margin: 0 0 16px; color: #9ca3af; }
-    .field-label { display: block; margin-bottom: 8px; font-size: 14px; }
-    input[type="email"] { width: 100%; box-sizing: border-box; border: 1px solid #374151; background: #0f172a; color: #f3f4f6; border-radius: 10px; padding: 12px; margin-bottom: 12px; }
-    .remember-row { display: flex; align-items: center; gap: 10px; margin: 4px 0 14px; }
-    .remember-row input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: #2563eb; }
-    .remember-row label { margin: 0; font-size: 14px; color: #d1d5db; }
-    button { width: 100%; border: 0; border-radius: 10px; padding: 12px; font-weight: 600; cursor: pointer; background: #2563eb; color: white; }
-    .message { margin-top: 12px; font-size: 14px; min-height: 20px; }
-    .ok { color: #4ade80; }
-    .error { color: #f87171; }
-  </style>
-</head>
-<body>
-  <main class="wrap">
-    <section class="card">
-      <h1>Sign in to Cadence</h1>
-      <p>Enter your email and we’ll send a secure magic link.</p>
+  const contentHtml = `<div class="login-shell">
+    <section class="card-surface login-card">
+      <h1 class="brand-title">Cadence</h1>
+      <p class="brand-subtitle">Cadence by Autom8 — sign in with your email magic link.</p>
+
       <form id="magic-link-form">
-        <label class="field-label" for="email">Email</label>
-        <input id="email" name="email" type="email" autocomplete="email" required />
-        <div class="remember-row">
-          <input id="remember_me" name="remember_me" type="checkbox" checked />
-          <label for="remember_me">Remember me for 30 days</label>
+        <div class="form-row">
+          <label for="email">Email</label>
+          <input id="email" name="email" type="email" autocomplete="email" required />
         </div>
+
+        <div class="inline-row form-row">
+          <input id="remember_me" name="remember_me" type="checkbox" checked />
+          <label for="remember_me" style="margin: 0; text-transform: none; letter-spacing: 0; font-size: 0.92rem;">Remember me for 30 days</label>
+        </div>
+
         <input id="next" name="next" type="hidden" value="${escapeHtml(nextPath)}" />
-        <button type="submit">Send magic link</button>
+        <button class="btn btn-primary" type="submit" style="width: 100%;">Send magic link</button>
       </form>
-      <div id="status" class="message"></div>
+
+      <p class="form-feedback" id="status"></p>
     </section>
-  </main>
+  </div>
+
   <script>
     const form = document.getElementById('magic-link-form');
     const status = document.getElementById('status');
 
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
-      status.className = 'message';
-      status.textContent = 'Sending...';
+      status.className = 'form-feedback';
+      status.textContent = 'Sending magic link...';
 
       const email = document.getElementById('email').value.trim();
       const next = document.getElementById('next').value.trim();
@@ -187,7 +162,7 @@ export function renderLoginPage(req: Request, res: Response) {
         const response = await fetch('/api/auth/magic-link', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, next, remember_me: rememberMe }),
+          body: JSON.stringify({ email, next, remember_me: rememberMe })
         });
 
         if (!response.ok) {
@@ -195,17 +170,23 @@ export function renderLoginPage(req: Request, res: Response) {
           throw new Error(payload.error || 'Failed to send magic link');
         }
 
-        status.className = 'message ok';
-        status.textContent = 'If that email is on file, check your inbox for your magic link.';
-        form.reset();
+        status.className = 'form-feedback feedback-ok';
+        status.textContent = 'Check your inbox — your secure sign-in link is on the way.';
       } catch (error) {
-        status.className = 'message error';
+        status.className = 'form-feedback feedback-error';
         status.textContent = error instanceof Error ? error.message : 'Failed to send magic link';
       }
     });
-  </script>
-</body>
-</html>`);
+  </script>`;
+
+  const page = renderAppShell({
+    title: 'Cadence Login',
+    bodyClassName: 'login-page',
+    contentHtml,
+    footerHtml: 'Powered by <a class="footer-link" href="https://autom8everything.com" target="_blank" rel="noopener noreferrer">Autom8 Everything</a>',
+  });
+
+  res.type('html').send(page);
 }
 
 export async function handleMagicLinkRequest(req: Request, res: Response) {

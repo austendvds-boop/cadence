@@ -1,5 +1,41 @@
 # Coder Context
 
+## 2026-03-04 (Dashboard/Admin/Login UI overhaul to Autom8 dark design system)
+- Added shared app shell helper in `src/api/ui-shell.ts`:
+  - `renderAppShell(...)` now provides reusable page shell (head, top nav/header, main, footer).
+  - Centralized HTML escaping and status badge styling helpers (`escapeHtml`, `statusBadgeClass`).
+- Added shared UI stylesheet `public/cadence-ui.css`:
+  - Deep navy background (`#0b1020`) with subtle gradient glow overlays.
+  - Card surfaces (`#111827`) + border treatment (`#1f2937`/slate border), rounded corners, Inter font, responsive utility classes.
+  - Reusable buttons, badges, table, form, and mobile layout styles used across login/dashboard/admin pages.
+- Rebuilt login page (`src/api/auth.ts`, `renderLoginPage`):
+  - Cadence branding at top (`Cadence` + `Cadence by Autom8` messaging).
+  - Dark card with email input, remember-me checkbox, and accent `Send magic link` button.
+  - Styled success/error status feedback.
+  - Footer now includes `Powered by Autom8 Everything` link.
+- Rebuilt client dashboard (`src/api/dashboard.ts`):
+  - Top bar now shows `Cadence Dashboard`, business name, billing action, and logout link.
+  - Overview cards: subscription status badge, Cadence number, trial end date (when trial), total calls this month.
+  - Call log panel now loads paginated entries from `/api/clients/:id/calls` with `Load more` behavior and empty state:
+    - `No calls yet — your AI receptionist is ready and waiting!`
+  - Settings section split into separate save flows/cards for transfer number, greeting text, business hours, and FAQs.
+  - Subscription section includes current plan status, period details, and `Manage Subscription` button to billing portal.
+- Rebuilt admin panel (`src/api/admin.ts`):
+  - Top bar now shows `Cadence Admin` with `Back to Dashboard` + logout actions.
+  - Stats row includes total, active, trial, past_due, canceled count cards.
+  - Client list table columns now match requested format: Business Name, Owner, Email, Status, Cadence Number, Signup Date.
+  - Status badges color-coded by state; rows are clickable to `/admin/client/:id`.
+  - Filter dropdown supports all statuses + CSV export action retained.
+- Rebuilt individual admin client page (`src/api/admin.ts`, `renderAdminClient`):
+  - All core client fields remain editable.
+  - Added structured override sections (routing/greeting, model overrides, tools/system prompt, business data).
+  - Added client-specific call log panel with `Load more` pagination.
+  - Save override flow keeps success/error feedback.
+- Scope safety:
+  - No voice routing, tenant routing/config, Twilio media flow, or provisioning/Stripe API business logic modified.
+  - Changes are limited to HTML rendering functions and shared CSS presentation.
+- Build verification: `npm run build` passed (TypeScript compile clean).
+
 ## 2026-03-04 (Call logging to DB + client call log API + Twilio status callback)
 - Added first-class call log APIs in `src/api/calls.ts` and wired routes in `src/index.ts`:
   - `GET /api/clients/:id/calls` (requires `requireAuth`) with ownership/admin enforcement, pagination (`limit`, `offset`), and default page size `50`.
