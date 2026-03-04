@@ -3,12 +3,12 @@ import express, { type Request, type Response } from 'express';
 import http from 'http';
 import { WebSocketServer } from 'ws';
 import { create } from 'xmlbuilder2';
-import { handleMagicLinkRequest, handleMagicLinkVerify } from './api/auth';
+import { handleMagicLinkRequest, handleMagicLinkVerify, renderLoginPage } from './api/auth';
 import { renderAdmin, renderAdminClient } from './api/admin';
 import { handleClientBillingPortal, handlePatchAdminClient, handlePatchOwnClient } from './api/clients';
 import { renderDashboard } from './api/dashboard';
 import { handleProvisionRequest, handleStripeCheckout, handleStripeWebhook } from './api/stripe';
-import { requireAdmin, requireAuth } from './middleware/auth';
+import { requireAdmin, requireAuth, requirePageAuth } from './middleware/auth';
 import { env } from './utils/env';
 import { logger } from './utils/logger';
 import { handleTwilioMedia } from './websocket/handler';
@@ -49,13 +49,14 @@ app.post('/api/provision', handleProvisionRequest);
 
 app.post('/api/auth/magic-link', handleMagicLinkRequest);
 app.get('/api/auth/verify', handleMagicLinkVerify);
+app.get('/login', renderLoginPage);
 
-app.get('/dashboard', requireAuth, renderDashboard);
+app.get('/dashboard', requirePageAuth, renderDashboard);
 app.patch('/api/clients/:id', requireAuth, handlePatchOwnClient);
 app.get('/api/clients/:id/billing-portal', requireAuth, handleClientBillingPortal);
 
-app.get('/admin', requireAuth, requireAdmin, renderAdmin);
-app.get('/admin/client/:id', requireAuth, requireAdmin, renderAdminClient);
+app.get('/admin', requirePageAuth, requireAdmin, renderAdmin);
+app.get('/admin/client/:id', requirePageAuth, requireAdmin, renderAdminClient);
 app.patch('/api/admin/clients/:id', requireAuth, requireAdmin, handlePatchAdminClient);
 
 app.post('/incoming-call', handleVoiceRequest);

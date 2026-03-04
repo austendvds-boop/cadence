@@ -20,6 +20,7 @@ import { env } from '../utils/env';
 import { logger } from '../utils/logger';
 
 const CHECKOUT_TRIAL_DAYS = 7;
+const DEFAULT_STRIPE_PRICE_ID = 'price_1T78E6BxWKNs26XEDy0SFBaY';
 const DEFAULT_STRIPE_WEBHOOK_SECRET = 'whsec_UWmBZ7PE0of6Uz48Ir2Anz7P0DfegRg4';
 const CHURN_NOTIFICATION_SMS = 'Your Cadence subscription has ended. Your AI receptionist number has been deactivated. To reactivate, visit autom8everything.com/onboarding';
 
@@ -688,8 +689,9 @@ export async function handleStripeCheckout(req: Request, res: Response) {
   try {
     const stripe = getStripeClient();
 
+    const stripePriceId = env.STRIPE_PRICE_ID || DEFAULT_STRIPE_PRICE_ID;
     if (!env.STRIPE_PRICE_ID) {
-      return res.status(500).json({ error: 'STRIPE_PRICE_ID is not configured' });
+      logger.warn({ fallbackPriceId: DEFAULT_STRIPE_PRICE_ID }, 'STRIPE_PRICE_ID missing; using fallback');
     }
 
     const body = asRecord(req.body);
@@ -741,7 +743,7 @@ export async function handleStripeCheckout(req: Request, res: Response) {
     const checkoutSession = await stripe.checkout.sessions.create({
       mode: 'subscription',
       customer: stripeCustomer.id,
-      line_items: [{ price: env.STRIPE_PRICE_ID, quantity: 1 }],
+      line_items: [{ price: stripePriceId, quantity: 1 }],
       subscription_data: {
         trial_period_days: CHECKOUT_TRIAL_DAYS,
         metadata: {

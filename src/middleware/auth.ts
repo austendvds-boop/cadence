@@ -5,6 +5,8 @@ import { env } from '../utils/env';
 
 const AUTH_COOKIE_NAME = 'cadence_token';
 
+type AuthFailureMode = 'json' | 'redirect';
+
 type SessionTokenPayload = {
   type: 'session';
   client_id: string;
@@ -40,21 +42,45 @@ function getJwtSecret(): string {
   return env.JWT_SECRET;
 }
 
-export async function requireAuth(req: Request, res: Response, next: NextFunction) {
+function buildLoginRedirect(req: Request): string {
+  const next = req.originalUrl || req.path || '/dashboard';
+  return `/login?next=${encodeURIComponent(next)}`;
+}
+
+function handleAuthFailure(
+  req: Request,
+  res: Response,
+  status: number,
+  error: string,
+  failureMode: AuthFailureMode
+) {
+  if (failureMode === 'redirect') {
+    return res.redirect(302, buildLoginRedirect(req));
+  }
+
+  return res.status(status).json({ error });
+}
+
+async function enforceAuth(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+  failureMode: AuthFailureMode
+) {
   try {
     const token = getSessionToken(req);
     if (!token) {
-      return res.status(401).json({ error: 'Unauthorized' });
+      return handleAuthFailure(req, res, 401, 'Unauthorized', failureMode);
     }
 
     const payload = jwt.verify(token, getJwtSecret()) as SessionTokenPayload;
     if (payload.type !== 'session' || !payload.client_id || !payload.email) {
-      return res.status(401).json({ error: 'Invalid session token' });
+      return handleAuthFailure(req, res, 401, 'Invalid session token', failureMode);
     }
 
     const client = await getClientById(payload.client_id);
     if (!client) {
-      return res.status(401).json({ error: 'Client not found for session' });
+      return handleAuthFailure(req, res, 401, 'Client not found for session', failureMode);
     }
 
     const requestWithAuth = req as AuthenticatedRequest;
@@ -62,8 +88,16 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     requestWithAuth.authEmail = payload.email;
     return next();
   } catch {
-    return res.status(401).json({ error: 'Invalid or expired session' });
+    return handleAuthFailure(req, res, 401, 'Invalid or expired session', failureMode);
   }
+}
+
+export async function requireAuth(req: Request, res: Response, next: NextFunction) {
+  return enforceAuth(req, res, next, 'json');
+}
+
+export async function requirePageAuth(req: Request, res: Response, next: NextFunction) {
+  return enforceAuth(req, res, next, 'redirect');
 }
 
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
