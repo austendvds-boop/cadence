@@ -29,7 +29,7 @@ Completing a package qualifies students for the Arizona road test waiver, which 
 
 Students receive an insurance certificate upon completion, and most major insurance companies offer around a twenty percent discount with it. Encourage students to shop around with the certificate for the best savings.
 
-Booking is done at www.deervalleydrivingschool.com where students pick their region, choose dates, and pay online. Availability is live from instructor calendars, so students pick their own dates at checkout with no wait and no back and forth. Instructor contact information is sent via an automated confirmation email after booking.
+For booking, head to www.deervalleydrivingschool.com. It is a super easy process, takes just a couple minutes, and they can pick their dates and pay right there. If the caller seems interested, offer to text them the link. Do not walk them through the booking steps on the phone, just let them know it is quick and simple and send them to the site.
 
 For rescheduling or canceling, the student should use the confirmation email to click reschedule or call back to do it over the phone. Rescheduling requires forty eight or more hours notice, and there is a seventy five dollar fee for rescheduling with less than forty eight hours notice. Repeat customers should simply rebook on the website using the same process.
 
