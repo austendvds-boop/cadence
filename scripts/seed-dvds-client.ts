@@ -28,6 +28,7 @@ async function seedDvdsClient(): Promise<void> {
       sttModel: dvdsTenant.sttModel || 'nova-2',
       toolsAllowed: dvdsTenant.tools,
       subscriptionStatus: 'active',
+      grandfathered: true,
     });
 
     if (!updated) {
@@ -51,6 +52,7 @@ async function seedDvdsClient(): Promise<void> {
     sttModel: dvdsTenant.sttModel || 'nova-2',
     toolsAllowed: dvdsTenant.tools,
     subscriptionStatus: 'active',
+    grandfathered: true,
   });
 
   console.log(`Created DVDS client ${created.id} (${created.twilioNumber || DVDS_NUMBER})`);

@@ -1,5 +1,25 @@
 # Coder Context
 
+## 2026-03-03 (Auto-deactivation on Stripe churn + grandfathered guard)
+- Stripe webhook churn handling now routes through a single helper in `src/api/stripe.ts`:
+  - `customer.subscription.deleted` now calls `deactivateClient(client.id)`.
+  - `invoice.payment_failed` now deactivates **only after retries are exhausted** (`next_payment_attempt` absent) and otherwise leaves client in `past_due`.
+- Added churn deactivation workflow (`deactivateClient(clientId)`) to:
+  - Skip grandfathered/unmanaged active clients (active with no Stripe subscription id).
+  - Release Twilio numbers via `releaseNumber(twilioNumberSid)` from provisioning layer.
+  - Set subscription status to `canceled` and clear `twilio_number` / `twilio_number_sid`.
+  - Send client SMS: `Your Cadence subscription has ended. Your AI receptionist number has been deactivated. To reactivate, visit autom8everything.com/onboarding`.
+  - Send admin email alert to `aust@autom8everything.com` (via `ADMIN_EMAIL` env) with churn/released-number notice.
+- Added grandfathered support in DB/query layer:
+  - New migration `db/migrations/004_add_grandfathered_clients.sql` adds `clients.grandfathered BOOLEAN NOT NULL DEFAULT FALSE`, backfills existing active clients without Stripe subscription ids as grandfathered, and adds index.
+  - `src/db/queries.ts` now maps/persists `grandfathered` on `Client`, `createClient`, and `updateClient`.
+  - `scripts/seed-dvds-client.ts` now marks DVDS as `grandfathered: true`.
+- Reactivation path preserved:
+  - Checkout continues updating existing client record by `owner_email` (no duplicate client creation).
+  - Stripe-managed updates clear `grandfathered` to `false`.
+  - Because churn deactivation clears Twilio assignment, re-onboarding provisions a new number.
+- Build verification: `npm run build` passed (TypeScript compile clean).
+
 ## 2026-03-03 (Onboarding checkout pipeline pending-status hardening)
 - Verified existing onboarding flow already:
   - Captures `area_code` during intake (`src/config/tenants.ts` onboarding prompt, `save_onboarding_field` schema guidance).

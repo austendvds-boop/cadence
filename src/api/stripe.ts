@@ -1,10 +1,11 @@
 import type { Request, Response } from 'express';
+import nodemailer, { type Transporter } from 'nodemailer';
 import Stripe from 'stripe';
 import { invalidateTenantCacheByTwilioNumber } from '../config/tenant-routing';
 import { dbQuery } from '../db/client';
 import {
   createClient,
-  deactivateClient,
+  deactivateClient as setClientCanceled,
   getClientById,
   getClientByOwnerEmail,
   getClientByStripeCustomerId,
@@ -13,15 +14,17 @@ import {
   type Client,
   type SubscriptionStatus,
 } from '../db/queries';
-import { isProtectedTwilioPhoneNumber, provisionIncomingNumber, releaseNumberDetailed } from '../twilio/provisioning';
+import { isProtectedTwilioPhoneNumber, provisionIncomingNumber, releaseNumber } from '../twilio/provisioning';
 import { sendSms } from '../twilio/service';
 import { env } from '../utils/env';
 import { logger } from '../utils/logger';
 
 const CHECKOUT_TRIAL_DAYS = 7;
 const DEFAULT_STRIPE_WEBHOOK_SECRET = 'whsec_UWmBZ7PE0of6Uz48Ir2Anz7P0DfegRg4';
+const CHURN_NOTIFICATION_SMS = 'Your Cadence subscription has ended. Your AI receptionist number has been deactivated. To reactivate, visit autom8everything.com/onboarding';
 
 let stripeClient: Stripe | null = null;
+let smtpTransporter: Transporter | null = null;
 
 function getStripeClient(): Stripe {
   if (stripeClient) return stripeClient;
@@ -82,6 +85,53 @@ function getWelcomeSmsDestination(client: Client): string {
 
 function buildWelcomeSmsMessage(provisionedNumber: string): string {
   return `Welcome to Cadence! Your AI receptionist is live at ${provisionedNumber}. Forward your business line to this number to get started. Questions? Reply here or call us.`;
+}
+
+function getSmtpTransporter(): Transporter {
+  if (smtpTransporter) return smtpTransporter;
+
+  if (!env.SMTP_USER || !env.SMTP_PASS) {
+    throw new Error('SMTP_USER / SMTP_PASS are not configured');
+  }
+
+  smtpTransporter = nodemailer.createTransport({
+    host: env.SMTP_HOST,
+    port: env.SMTP_PORT,
+    secure: env.SMTP_PORT === 465,
+    auth: {
+      user: env.SMTP_USER,
+      pass: env.SMTP_PASS,
+    },
+  });
+
+  return smtpTransporter;
+}
+
+function shouldSkipChurnDeactivation(client: Client): boolean {
+  const hasStripeSubscription = Boolean(asTrimmedString(client.stripeSubscriptionId));
+
+  if (client.grandfathered && !hasStripeSubscription) {
+    return true;
+  }
+
+  return client.subscriptionStatus === 'active' && !hasStripeSubscription;
+}
+
+function isInvoiceRetryExhausted(invoice: Stripe.Invoice): boolean {
+  const invoiceRecord = invoice as unknown as Record<string, unknown>;
+  const attempted = invoiceRecord.attempted !== false;
+  const nextPaymentAttempt = invoiceRecord.next_payment_attempt;
+  return attempted && !(typeof nextPaymentAttempt === 'number' && Number.isFinite(nextPaymentAttempt));
+}
+
+async function sendAdminChurnEmail(client: Client, releasedNumber: string): Promise<void> {
+  const destination = env.ADMIN_EMAIL || 'aust@autom8everything.com';
+  await getSmtpTransporter().sendMail({
+    from: env.SMTP_FROM || env.SMTP_USER,
+    to: destination,
+    subject: `Cadence churn alert: ${client.businessName}`,
+    text: `Client ${client.businessName} churned. Number ${releasedNumber} released.`,
+  });
 }
 
 function stripeRefToId(value: unknown): string {
@@ -342,51 +392,78 @@ async function provisionClientInline(clientId: string, options: ProvisionClientO
   return updatedClient;
 }
 
-async function releaseClientNumber(client: Client): Promise<void> {
-  if (isProtectedTwilioPhoneNumber(client.twilioNumber)) {
-    logger.warn(
-      {
-        clientId: client.id,
-        phoneNumber: client.twilioNumber,
-      },
-      'Skipped releasing protected Twilio number'
-    );
+async function deactivateClient(clientId: string): Promise<void> {
+  const client = await getClientById(clientId);
+  if (!client) {
+    logger.warn({ clientId }, 'Unable to resolve client for churn deactivation');
     return;
   }
 
-  if (!client.twilioNumberSid) {
-    return;
-  }
-
-  const releaseResult = await releaseNumberDetailed(client.twilioNumberSid);
-
-  if (releaseResult.reason === 'protected_number') {
-    logger.warn(
-      {
-        clientId: client.id,
-        phoneNumber: releaseResult.phoneNumber,
-      },
-      'Skipped releasing protected Twilio number'
-    );
-    return;
-  }
-
-  if (releaseResult.released || releaseResult.reason === 'not_found') {
+  if (shouldSkipChurnDeactivation(client)) {
     logger.info(
       {
         clientId: client.id,
-        released: releaseResult.released,
-        reason: releaseResult.reason,
-        phoneNumber: releaseResult.phoneNumber,
+        subscriptionStatus: client.subscriptionStatus,
+        grandfathered: client.grandfathered,
+        stripeSubscriptionId: client.stripeSubscriptionId,
       },
-      'Twilio number released for deactivated client'
+      'Skipping churn deactivation for grandfathered/unmanaged client'
     );
+    return;
+  }
 
-    invalidateTenantCacheByTwilioNumber(client.twilioNumber);
-    await updateClient(client.id, {
-      twilioNumber: null,
-      twilioNumberSid: null,
-    });
+  if (client.subscriptionStatus === 'canceled' && !client.twilioNumber && !client.twilioNumberSid) {
+    logger.info({ clientId: client.id }, 'Client already deactivated; skipping duplicate churn workflow');
+    return;
+  }
+
+  const releasedNumber = client.twilioNumber || 'Unknown';
+
+  if (client.twilioNumberSid) {
+    if (isProtectedTwilioPhoneNumber(client.twilioNumber)) {
+      logger.warn(
+        {
+          clientId: client.id,
+          phoneNumber: client.twilioNumber,
+        },
+        'Skipping release for protected Twilio number during churn deactivation'
+      );
+    } else {
+      await releaseNumber(client.twilioNumberSid);
+      logger.info(
+        {
+          clientId: client.id,
+          twilioNumber: client.twilioNumber,
+          twilioNumberSid: client.twilioNumberSid,
+        },
+        'Twilio number released during churn deactivation'
+      );
+    }
+  }
+
+  await setClientCanceled(client.id);
+  await updateClient(client.id, {
+    twilioNumber: null,
+    twilioNumberSid: null,
+  });
+
+  invalidateTenantCacheByTwilioNumber(client.twilioNumber);
+
+  const smsDestination = asTrimmedString(client.ownerPhone || '');
+  if (smsDestination) {
+    try {
+      await sendSms(smsDestination, CHURN_NOTIFICATION_SMS);
+    } catch (error) {
+      logger.error({ error, clientId: client.id, to: smsDestination }, 'Failed to send churn notification SMS');
+    }
+  } else {
+    logger.warn({ clientId: client.id }, 'No owner phone available for churn notification SMS');
+  }
+
+  try {
+    await sendAdminChurnEmail(client, releasedNumber);
+  } catch (error) {
+    logger.error({ error, clientId: client.id, adminEmail: env.ADMIN_EMAIL }, 'Failed to send churn notification email');
   }
 }
 
@@ -426,6 +503,7 @@ async function handleCheckoutSessionCompleted(event: Stripe.Event): Promise<void
     stripeSubscriptionId: subscriptionId || client.stripeSubscriptionId,
     areaCode: metadataAreaCode || client.areaCode,
     subscriptionStatus: baseStatus,
+    grandfathered: false,
   });
 
   let finalClient = updated ?? client;
@@ -454,6 +532,7 @@ async function handleCheckoutSessionCompleted(event: Stripe.Event): Promise<void
       stripeSubscriptionId: subscription.id,
       areaCode: metadataAreaCode || finalClient.areaCode,
       subscriptionStatus: mappedStatus,
+      grandfathered: false,
     });
 
     if (withSubscription) {
@@ -502,6 +581,7 @@ async function handleSubscriptionUpdated(event: Stripe.Event): Promise<void> {
     stripeCustomerId: customerId,
     stripeSubscriptionId: subscription.id,
     subscriptionStatus: mappedStatus,
+    grandfathered: false,
   });
 
   if (updatedClient && (mappedStatus === 'trial' || mappedStatus === 'active')) {
@@ -540,9 +620,7 @@ async function handleSubscriptionDeleted(event: Stripe.Event): Promise<void> {
     });
   }
 
-  await releaseClientNumber(client);
   await deactivateClient(client.id);
-  invalidateTenantCacheByTwilioNumber(client.twilioNumber);
 }
 
 async function handleInvoicePaymentFailed(event: Stripe.Event): Promise<void> {
@@ -591,9 +669,19 @@ async function handleInvoicePaymentFailed(event: Stripe.Event): Promise<void> {
     });
   }
 
-  await releaseClientNumber(client);
+  if (!isInvoiceRetryExhausted(invoice)) {
+    logger.info(
+      {
+        eventId: event.id,
+        clientId: client.id,
+        invoiceId: invoice.id,
+      },
+      'Invoice payment failed but retries remain; skipping deactivation'
+    );
+    return;
+  }
+
   await deactivateClient(client.id);
-  invalidateTenantCacheByTwilioNumber(client.twilioNumber);
 }
 
 export async function handleStripeCheckout(req: Request, res: Response) {
@@ -637,6 +725,7 @@ export async function handleStripeCheckout(req: Request, res: Response) {
           areaCode: areaCode || existingClient.areaCode,
           stripeCustomerId: stripeCustomer.id,
           subscriptionStatus,
+          grandfathered: false,
         })) ?? existingClient
       : await createClient({
           businessName,

@@ -29,6 +29,7 @@ export interface Client {
   stripeCustomerId: string | null;
   stripeSubscriptionId: string | null;
   subscriptionStatus: SubscriptionStatus;
+  grandfathered: boolean;
   ttsModel: string;
   sttModel: string;
   llmModel: string;
@@ -53,6 +54,7 @@ export interface CreateClientInput {
   stripeCustomerId?: string | null;
   stripeSubscriptionId?: string | null;
   subscriptionStatus?: SubscriptionStatus;
+  grandfathered?: boolean;
   ttsModel?: string;
   sttModel?: string;
   llmModel?: string;
@@ -75,6 +77,7 @@ export interface UpdateClientInput {
   stripeCustomerId?: string | null;
   stripeSubscriptionId?: string | null;
   subscriptionStatus?: SubscriptionStatus;
+  grandfathered?: boolean;
   ttsModel?: string;
   sttModel?: string;
   llmModel?: string;
@@ -137,6 +140,7 @@ interface ClientRow extends QueryResultRow {
   stripe_customer_id: string | null;
   stripe_subscription_id: string | null;
   subscription_status: SubscriptionStatus;
+  grandfathered: boolean;
   tts_model: string;
   stt_model: string;
   llm_model: string;
@@ -225,6 +229,7 @@ function mapClientRow(row: ClientRow): Client {
     stripeCustomerId: row.stripe_customer_id,
     stripeSubscriptionId: row.stripe_subscription_id,
     subscriptionStatus: row.subscription_status,
+    grandfathered: row.grandfathered,
     ttsModel: row.tts_model,
     sttModel: row.stt_model,
     llmModel: row.llm_model,
@@ -369,6 +374,7 @@ export async function createClient(input: CreateClientInput): Promise<Client> {
         stripe_customer_id,
         stripe_subscription_id,
         subscription_status,
+        grandfathered,
         tts_model,
         stt_model,
         llm_model,
@@ -376,7 +382,7 @@ export async function createClient(input: CreateClientInput): Promise<Client> {
       )
       VALUES (
         $1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10,
-        $11, $12, $13, $14, $15, $16, $17, $18, $19::text[]
+        $11, $12, $13, $14, $15, $16, $17, $18, $19, $20::text[]
       )
       RETURNING *
     `,
@@ -396,6 +402,7 @@ export async function createClient(input: CreateClientInput): Promise<Client> {
       input.stripeCustomerId ?? null,
       input.stripeSubscriptionId ?? null,
       input.subscriptionStatus ?? 'trial',
+      input.grandfathered ?? false,
       input.ttsModel ?? 'aura-2-thalia-en',
       input.sttModel ?? 'nova-2',
       input.llmModel ?? 'gpt-4o-mini',
@@ -431,6 +438,7 @@ export async function updateClient(clientId: string, input: UpdateClientInput): 
   pushSet('stripe_customer_id', input.stripeCustomerId);
   pushSet('stripe_subscription_id', input.stripeSubscriptionId);
   pushSet('subscription_status', input.subscriptionStatus);
+  pushSet('grandfathered', input.grandfathered);
   pushSet('tts_model', input.ttsModel);
   pushSet('stt_model', input.sttModel);
   pushSet('llm_model', input.llmModel);
