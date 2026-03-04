@@ -3,6 +3,7 @@ import { closeDbPool, withDbClient } from '../src/db/client';
 const ONBOARDING_TWILIO_NUMBER = '+14806313993';
 const ONBOARDING_TENANT_KEY = 'autom8-onboarding';
 const ONBOARDING_TOOLS = ['save_onboarding_field', 'complete_onboarding'];
+const ONBOARDING_OWNER_PHONE = '+16026633503';
 
 const ONBOARDING_GREETING =
   "Hey! Thanks for calling Autom8. I'm Cadence — I help set up AI phone agents for businesses. Mind if I ask you a few quick questions so we can get yours rolling?";
@@ -118,8 +119,8 @@ async function resetOnboardingClient(): Promise<void> {
           'Autom8 Everything - Cadence Onboarding',
           'Austen Salazar',
           'aust@autom8everything.com',
-          '+17607158498',
-          '+17607158498',
+          ONBOARDING_OWNER_PHONE,
+          ONBOARDING_OWNER_PHONE,
           ONBOARDING_GREETING,
           ONBOARDING_SYSTEM_PROMPT,
           ONBOARDING_TWILIO_NUMBER,

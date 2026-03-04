@@ -1,5 +1,7 @@
+import 'dotenv/config';
+
 const ONBOARDING_NUMBER = '+14806313993';
-const AUSTEN_SUMMARY_NUMBER = '+17607158498';
+const ONBOARDING_SUMMARY_SMS_TO = (process.env.ONBOARDING_SUMMARY_SMS_TO || '+16026633503').trim();
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -72,7 +74,7 @@ async function runSmoke(): Promise<void> {
     const resultRecord = onboardingResult as Record<string, unknown>;
     assert(resultRecord.ok === true, `complete_onboarding did not return success: ${JSON.stringify(resultRecord)}`);
     assert(resultRecord.summary_sms_sent === true, `complete_onboarding summary SMS failed: ${JSON.stringify(resultRecord)}`);
-    assert(asString(resultRecord.summary_sms_to) === AUSTEN_SUMMARY_NUMBER, `Unexpected summary_sms_to: ${resultRecord.summary_sms_to}`);
+    assert(asString(resultRecord.summary_sms_to) === ONBOARDING_SUMMARY_SMS_TO, `Unexpected summary_sms_to: ${resultRecord.summary_sms_to}`);
     assert(typeof resultRecord.customer_message === 'string' && asString(resultRecord.customer_message).length > 0, 'complete_onboarding missing customer_message');
 
     summary.completeOnboarding = {

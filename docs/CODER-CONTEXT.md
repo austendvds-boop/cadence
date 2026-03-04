@@ -1,5 +1,23 @@
 # Coder Context
 
+## 2026-03-04 (Onboarding summary SMS target -> Austen personal number)
+- Updated onboarding summary destination in `src/tools/executor.ts`:
+  - `complete_onboarding` now resolves `ONBOARDING_SUMMARY_SMS_TO` from env (`ONBOARDING_SUMMARY_SMS_TO`) with fallback `+16026633503`.
+- Updated env schema/docs:
+  - Added `ONBOARDING_SUMMARY_SMS_TO` to `src/utils/env.ts`.
+  - Added `ONBOARDING_SUMMARY_SMS_TO=+16026633503` to `.env.example`.
+- Updated DB-backed onboarding tenant defaults/seeds:
+  - `db/migrations/008_seed_core_tenants.sql` onboarding `owner_phone` + `transfer_number` -> `+16026633503`.
+  - `db/migrations/009_rebuild_onboarding_tenant.sql` onboarding `owner_phone` + `transfer_number` -> `+16026633503`.
+  - `scripts/reset-onboarding-client.ts` onboarding phone constants -> `+16026633503`.
+- Added `db/migrations/010_update_onboarding_summary_target_number.sql` to update existing onboarding tenant row(s) in DB.
+- Updated `scripts/smoke-onboarding.ts` expected summary destination to `ONBOARDING_SUMMARY_SMS_TO` env fallback `+16026633503`.
+- Verification:
+  - `npm run build` ✅
+  - `npm run typecheck` ✅
+  - `npm run db:migrate` ✅ applied `010_update_onboarding_summary_target_number.sql`
+  - Post-migration DB check confirmed onboarding tenant has `owner_phone` and `transfer_number` = `+16026633503`.
+
 ## 2026-03-04 (DVDS-baseline tenant replication pipeline + Autom8 rebase tooling)
 - Implemented deterministic DVDS baseline-clone architecture:
   - Added baseline registry: `src/config/baselines/dvds-baseline.ts`

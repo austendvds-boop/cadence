@@ -33,6 +33,7 @@ const EnvSchema = z.object({
   SMTP_PASS: z.string().optional(),
   SMTP_FROM: z.string().optional(),
   AUSTEN_CELL_NUMBER: z.string().optional(),
+  ONBOARDING_SUMMARY_SMS_TO: z.string().optional(),
   LOG_LEVEL: z.string().default('info'),
 });
 

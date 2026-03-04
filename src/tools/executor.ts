@@ -1,5 +1,6 @@
 import type { TenantConfig } from '../config/tenants';
 import { sendSms, transferToHuman } from '../twilio/service';
+import { env } from '../utils/env';
 import { logger } from '../utils/logger';
 
 type ToolContext = {
@@ -29,7 +30,10 @@ const ONBOARDING_FIELD_ALIASES: Record<(typeof REQUIRED_ONBOARDING_FIELDS)[numbe
   contact_email: ['contact_email', 'owner_email', 'email'],
 };
 
-const ONBOARDING_SUMMARY_SMS_TO = '+17607158498';
+const ONBOARDING_SUMMARY_SMS_TO = (() => {
+  const configured = (env.ONBOARDING_SUMMARY_SMS_TO || '').trim();
+  return isE164PhoneNumber(configured) ? configured : '+16026633503';
+})();
 const ONBOARDING_COMPLETE_VOICE_LINE =
   "You're all set! Someone from our team will reach out within 24 hours to get your AI agent live. Thanks for choosing Autom8!";
 
