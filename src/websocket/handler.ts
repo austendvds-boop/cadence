@@ -500,7 +500,10 @@ export function handleTwilioMedia(ws: WebSocket) {
         for (const c of msg.tool_calls as any[]) {
           if (c.type !== 'function' || !c.function) continue;
 
-          const rawArgs = c.function.arguments || '{}';
+          const rawArgs =
+            typeof c.function.arguments === 'string'
+              ? c.function.arguments
+              : JSON.stringify(c.function.arguments ?? {});
           const args = parseJsonSafe<Record<string, unknown>>(rawArgs, `tool_arguments:${c.function.name || 'unknown'}`);
           if (!args) {
             logger.warn({ tool: c.function.name, rawArgs: rawArgs.slice(0, 500) }, 'skipping tool call due to invalid JSON arguments');
