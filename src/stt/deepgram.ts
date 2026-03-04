@@ -19,14 +19,29 @@ type DeepgramMessage = {
   };
 };
 
-const DEEPGRAM_LISTEN_URL =
-  'wss://api.deepgram.com/v1/listen?model=nova-2&language=en-US&encoding=mulaw&sample_rate=8000&channels=1&punctuate=true&smart_format=true&interim_results=true&utterance_end_ms=500&endpointing=500&vad_events=true';
+function getDeepgramListenUrl(): string {
+  const params = new URLSearchParams({
+    model: 'nova-2',
+    language: 'en-US',
+    encoding: 'mulaw',
+    sample_rate: '8000',
+    channels: '1',
+    punctuate: 'true',
+    smart_format: 'true',
+    interim_results: 'true',
+    utterance_end_ms: String(env.UTTERANCE_END_MS),
+    endpointing: String(env.ENDPOINTING_MS),
+    vad_events: 'true',
+  });
+
+  return `wss://api.deepgram.com/v1/listen?${params.toString()}`;
+}
 
 export function createDeepgramBridge(cb: SttCallbacks) {
   const apiKey = env.DEEPGRAM_API_KEY;
   if (!apiKey) throw new Error('Missing DEEPGRAM_API_KEY');
 
-  const ws = new WebSocket(DEEPGRAM_LISTEN_URL, {
+  const ws = new WebSocket(getDeepgramListenUrl(), {
     headers: { Authorization: `Token ${apiKey}` },
   });
 

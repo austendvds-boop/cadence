@@ -23,18 +23,24 @@ if (llmClient) {
 
 const openaiTts = env.OPENAI_API_KEY ? new OpenAI({ apiKey: env.OPENAI_API_KEY }) : null;
 
-export async function runAgent(messages: ChatMsg[]) {
+type RequestOptions = {
+  signal?: AbortSignal;
+};
+
+export async function runAgent(messages: ChatMsg[], options: RequestOptions = {}) {
   if (!llmClient) throw new Error('Missing OPENAI_API_KEY or GROQ_API_KEY');
   const response = await llmClient.chat.completions.create({
     model: LLM_MODEL,
     temperature: 0.7,
     messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages] as any,
     tools: toolDefinitions as any,
+  }, {
+    signal: options.signal,
   });
   return response.choices[0]?.message;
 }
 
-export async function runAgentStream(messages: ChatMsg[], onToken: (token: string) => void) {
+export async function runAgentStream(messages: ChatMsg[], onToken: (token: string) => void, options: RequestOptions = {}) {
   if (!llmClient) throw new Error('Missing OPENAI_API_KEY or GROQ_API_KEY');
 
   const stream = await llmClient.chat.completions.create({
@@ -43,6 +49,8 @@ export async function runAgentStream(messages: ChatMsg[], onToken: (token: strin
     stream: true,
     messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages] as any,
     tools: toolDefinitions as any,
+  }, {
+    signal: options.signal,
   });
 
   let content = '';

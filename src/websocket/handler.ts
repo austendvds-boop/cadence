@@ -1,11 +1,21 @@
 import { WebSocket } from 'ws';
 import { logger } from '../utils/logger';
 import { createDeepgramBridge } from '../stt/deepgram';
-import { runAgent, runAgentStream, streamDeepgramTTS, type ChatMsg } from '../llm/openai';
+import { runAgentStream, streamDeepgramTTS, type ChatMsg } from '../llm/openai';
 import { executeTool } from '../tools/executor';
 import { sendSms } from '../twilio/service';
 
 type TwilioMsg = { event: string; streamSid?: string; start?: any; media?: { payload: string } };
+
+function isAbortError(err: unknown): boolean {
+  if (err instanceof Error) {
+    return err.name === 'AbortError' || err.message.toLowerCase().includes('abort');
+  }
+  if (typeof err === 'object' && err !== null && 'name' in err) {
+    return (err as { name?: string }).name === 'AbortError';
+  }
+  return false;
+}
 
 const CHIME_FRAME_SAMPLES = 160; // 20ms @ 8kHz
 
@@ -264,17 +274,77 @@ export function handleTwilioMedia(ws: WebSocket) {
   let introPlaying = false;
   let introTimer: ReturnType<typeof setTimeout> | null = null;
   let responding = false;
+  let drainingUtterances = false;
+  let activeLlmAbort: AbortController | null = null;
   let activeTtsAbort: AbortController | null = null;
+  const pendingUtterances: string[] = [];
   const history: ChatMsg[] = [];
 
-  function bargeIn(reason: 'final_transcript') {
-    if (!isSpeaking || introPlaying) return;
-    logger.info({ reason }, 'barge-in: clearing outbound audio');
-    ws.send(JSON.stringify({ event: 'clear', streamSid }));
-    activeTtsAbort?.abort();
-    activeTtsAbort = null;
-    isSpeaking = false;
-    speaking = false;
+  function abortActiveResponse(reason: string) {
+    let aborted = false;
+
+    if (activeLlmAbort && !activeLlmAbort.signal.aborted) {
+      activeLlmAbort.abort();
+      activeLlmAbort = null;
+      aborted = true;
+    }
+
+    if (activeTtsAbort && !activeTtsAbort.signal.aborted) {
+      activeTtsAbort.abort();
+      activeTtsAbort = null;
+      aborted = true;
+    }
+
+    if (isSpeaking || speaking) {
+      ws.send(JSON.stringify({ event: 'clear', streamSid }));
+      isSpeaking = false;
+      speaking = false;
+      aborted = true;
+    }
+
+    if (aborted) {
+      logger.info({ reason }, 'barge-in: aborted in-flight response');
+    }
+  }
+
+  function bargeIn(reason: 'speech_started' | 'interim_transcript' | 'final_transcript' | 'queued_utterance') {
+    if (!responding || introPlaying) return;
+    abortActiveResponse(reason);
+  }
+
+  function enqueueUtterance(utterance: string) {
+    pendingUtterances.push(utterance);
+    logger.info({ utterance, queueLength: pendingUtterances.length }, 'Queued caller utterance');
+  }
+
+  async function drainUtteranceQueue() {
+    if (drainingUtterances) return;
+
+    drainingUtterances = true;
+    try {
+      while (pendingUtterances.length > 0) {
+        const utterance = pendingUtterances.shift();
+        if (!utterance) continue;
+
+        logger.info({ utterance, remainingQueue: pendingUtterances.length }, 'Processing caller utterance');
+        history.push({ role: 'user', content: utterance });
+        playProcessingChime();
+
+        responding = true;
+        try {
+          await respond();
+        } finally {
+          responding = false;
+          activeLlmAbort = null;
+          activeTtsAbort = null;
+        }
+      }
+    } finally {
+      drainingUtterances = false;
+      if (pendingUtterances.length > 0) {
+        void drainUtteranceQueue();
+      }
+    }
   }
 
   function playProcessingChime() {
@@ -321,36 +391,49 @@ export function handleTwilioMedia(ws: WebSocket) {
   }
 
   const dg = createDeepgramBridge({
-    onInterim: () => {},
-    onFinal: (t) => {
-      if (!t.trim()) return;
-      if (isSpeaking || speaking || introPlaying) {
-        logger.debug({ transcript: t }, 'Ignoring STT final while Cadence is speaking');
-        return;
+    onInterim: (t) => {
+      if (introPlaying) return;
+      if (responding && t.trim().split(/\s+/).length > 2) {
+        bargeIn('interim_transcript');
       }
-      logger.info({ transcript: t }, 'STT final');
-      finalParts.push(t);
     },
-    onUtteranceEnd: async () => {
+    onFinal: (t) => {
+      const transcript = t.trim();
+      if (!transcript) return;
+      if (introPlaying) return;
+      logger.info({ transcript }, 'STT final');
+      finalParts.push(transcript);
+      if (responding) {
+        bargeIn('final_transcript');
+      }
+    },
+    onUtteranceEnd: () => {
       try {
-        if (introPlaying) return;
-        if (responding) return;
-        if (isSpeaking || speaking) return;
+        if (introPlaying) {
+          finalParts = [];
+          return;
+        }
+
         const utterance = finalParts.join(' ').trim();
         finalParts = [];
         if (!utterance) return;
-        logger.info({ utterance }, 'utterance end — play chime and call LLM');
-        history.push({ role: 'user', content: utterance });
-        playProcessingChime();
-        responding = true;
-        await respond();
-        responding = false;
+
+        enqueueUtterance(utterance);
+
+        if (responding || isSpeaking || speaking) {
+          bargeIn('queued_utterance');
+        }
+
+        void drainUtteranceQueue();
       } catch (err) {
-        responding = false;
         logger.error({ err }, 'onUtteranceEnd error');
       }
     },
-    onSpeechStarted: () => {}
+    onSpeechStarted: () => {
+      if (!introPlaying && responding) {
+        bargeIn('speech_started');
+      }
+    }
   });
 
   async function respond(depth = 0) {
@@ -363,14 +446,25 @@ export function handleTwilioMedia(ws: WebSocket) {
 
       const tokenQueue = createAsyncTextQueue();
       const tokenBuffer: string[] = [];
+      const llmAbortController = new AbortController();
+      activeLlmAbort = llmAbortController;
 
       const ttsTask = speakFromStream(tokenQueue.iterable);
-      const msg = await runAgentStream(history, (token) => {
-        tokenBuffer.push(token);
-        tokenQueue.push(token);
-      });
-      tokenQueue.close();
+      const msg = await (async () => {
+        try {
+          return await runAgentStream(history, (token) => {
+            tokenBuffer.push(token);
+            tokenQueue.push(token);
+          }, { signal: llmAbortController.signal });
+        } finally {
+          tokenQueue.close();
+        }
+      })();
+
       await ttsTask;
+      if (activeLlmAbort === llmAbortController) {
+        activeLlmAbort = null;
+      }
 
       logger.info({ hasToolCalls: !!(msg?.tool_calls?.length), content: tokenBuffer.join('').slice(0, 80) }, 'LLM response');
       if (!msg) return;
@@ -400,6 +494,11 @@ export function handleTwilioMedia(ws: WebSocket) {
       const text = msg.content || tokenBuffer.join('').trim() || 'Sorry, I had trouble with that. Let me connect you with Austen.';
       history.push({ role: 'assistant', content: text });
     } catch (err) {
+      if (isAbortError(err)) {
+        logger.info('respond() aborted due to barge-in');
+        return;
+      }
+
       logger.error({ err }, 'respond() error');
       try {
         await speakText('Sorry, I ran into a technical issue. Let me connect you with someone who can help.');
@@ -407,6 +506,8 @@ export function handleTwilioMedia(ws: WebSocket) {
       } catch (_) {
         ws.close();
       }
+    } finally {
+      activeLlmAbort = null;
     }
   }
 
@@ -458,20 +559,28 @@ export function handleTwilioMedia(ws: WebSocket) {
       }
     }
     if (msg.event === 'media' && msg.media?.payload) {
-      if (!isSpeaking && !speaking && !introPlaying) {
+      if (!introPlaying) {
         dg.sendMulaw(Buffer.from(msg.media.payload, 'base64'));
       }
       logger.debug('incoming audio packet');
     }
     if (msg.event === 'stop') {
-      activeTtsAbort?.abort();
+      pendingUtterances.length = 0;
+      abortActiveResponse('twilio_stop');
       dg.close();
       ws.close();
     }
   });
 
   ws.on('close', async () => {
-    activeTtsAbort?.abort();
+    if (introTimer) {
+      clearTimeout(introTimer);
+      introTimer = null;
+    }
+
+    introPlaying = false;
+    pendingUtterances.length = 0;
+    abortActiveResponse('websocket_close');
     dg.close();
 
     const userMessages = history
