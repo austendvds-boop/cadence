@@ -5,6 +5,9 @@ export interface TenantConfig {
   systemPrompt: string;
   greeting: string;
   ownerCell: string;
+  acuityUserId?: number;
+  acuityCalendarIds?: number[];
+  appointmentTypeIds?: Record<string, number>;
   tools: string[];
   ttsModel?: string;
   sttModel?: string;
