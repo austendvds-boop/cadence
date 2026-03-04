@@ -101,6 +101,25 @@ export interface LogCallInput {
   toolCalls?: JsonValue | null;
 }
 
+export interface ClientSubscription {
+  clientId: string;
+  status: string;
+  trialStart: Date | null;
+  trialEnd: Date | null;
+  currentPeriodStart: Date | null;
+  currentPeriodEnd: Date | null;
+  cancelAtPeriodEnd: boolean;
+  updatedAt: Date;
+}
+
+export interface ClientStats {
+  totalClients: number;
+  activeClients: number;
+  trialClients: number;
+  churnedClients: number;
+  totalCallsToday: number;
+}
+
 interface ClientRow extends QueryResultRow {
   id: string;
   business_name: string;
@@ -135,6 +154,25 @@ interface CallLogRow extends QueryResultRow {
   transcript_summary: string | null;
   tool_calls: unknown;
   created_at: Date;
+}
+
+interface ClientSubscriptionRow extends QueryResultRow {
+  client_id: string;
+  status: string;
+  trial_start: Date | null;
+  trial_end: Date | null;
+  current_period_start: Date | null;
+  current_period_end: Date | null;
+  cancel_at_period_end: boolean;
+  updated_at: Date;
+}
+
+interface ClientStatsRow extends QueryResultRow {
+  total_clients: number;
+  active_clients: number;
+  trial_clients: number;
+  churned_clients: number;
+  total_calls_today: number;
 }
 
 function asStringArray(value: unknown): string[] {
@@ -206,6 +244,34 @@ function mapCallLogRow(row: CallLogRow): CallLog {
     transcriptSummary: row.transcript_summary,
     toolCalls: (row.tool_calls ?? null) as JsonValue | null,
     createdAt: row.created_at,
+  };
+}
+
+function mapClientSubscriptionRow(row: ClientSubscriptionRow): ClientSubscription {
+  return {
+    clientId: row.client_id,
+    status: row.status,
+    trialStart: row.trial_start,
+    trialEnd: row.trial_end,
+    currentPeriodStart: row.current_period_start,
+    currentPeriodEnd: row.current_period_end,
+    cancelAtPeriodEnd: row.cancel_at_period_end,
+    updatedAt: row.updated_at,
+  };
+}
+
+function asNumber(value: unknown): number {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function mapClientStatsRow(row: ClientStatsRow): ClientStats {
+  return {
+    totalClients: asNumber(row.total_clients),
+    activeClients: asNumber(row.active_clients),
+    trialClients: asNumber(row.trial_clients),
+    churnedClients: asNumber(row.churned_clients),
+    totalCallsToday: asNumber(row.total_calls_today),
   };
 }
 
@@ -446,4 +512,90 @@ export async function getCallLogs(clientId: string, limit = 50): Promise<CallLog
   );
 
   return result.rows.map(mapCallLogRow);
+}
+
+export async function listClients(options: {
+  status?: string;
+  limit?: number;
+  offset?: number;
+} = {}): Promise<Client[]> {
+  const safeLimit = Number.isFinite(options.limit) ? Math.max(1, Math.min(500, Math.floor(options.limit as number))) : 100;
+  const safeOffset = Number.isFinite(options.offset) ? Math.max(0, Math.floor(options.offset as number)) : 0;
+
+  const status = options.status;
+  const hasStatusFilter = status === 'pending' || status === 'trial' || status === 'active' || status === 'past_due' || status === 'canceled';
+
+  const result = hasStatusFilter
+    ? await dbQuery<ClientRow>(
+      `
+        SELECT *
+        FROM clients
+        WHERE subscription_status = $1
+        ORDER BY created_at DESC
+        LIMIT $2 OFFSET $3
+      `,
+      [status, safeLimit, safeOffset]
+    )
+    : await dbQuery<ClientRow>(
+      `
+        SELECT *
+        FROM clients
+        ORDER BY created_at DESC
+        LIMIT $1 OFFSET $2
+      `,
+      [safeLimit, safeOffset]
+    );
+
+  return result.rows.map(mapClientRow);
+}
+
+export async function getSubscriptionByClientId(clientId: string): Promise<ClientSubscription | null> {
+  const result = await dbQuery<ClientSubscriptionRow>(
+    `
+      SELECT
+        client_id,
+        status,
+        trial_start,
+        trial_end,
+        current_period_start,
+        current_period_end,
+        cancel_at_period_end,
+        updated_at
+      FROM subscriptions
+      WHERE client_id = $1
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `,
+    [clientId]
+  );
+
+  const row = result.rows[0];
+  return row ? mapClientSubscriptionRow(row) : null;
+}
+
+export async function getClientStats(): Promise<ClientStats> {
+  const result = await dbQuery<ClientStatsRow>(
+    `
+      SELECT
+        COUNT(*)::int AS total_clients,
+        COUNT(*) FILTER (WHERE subscription_status = 'active')::int AS active_clients,
+        COUNT(*) FILTER (WHERE subscription_status = 'trial')::int AS trial_clients,
+        COUNT(*) FILTER (WHERE subscription_status = 'canceled')::int AS churned_clients,
+        (
+          SELECT COUNT(*)::int
+          FROM call_logs
+          WHERE created_at >= date_trunc('day', NOW())
+        ) AS total_calls_today
+      FROM clients
+    `
+  );
+
+  const row = result.rows[0];
+  return row ? mapClientStatsRow(row) : {
+    totalClients: 0,
+    activeClients: 0,
+    trialClients: 0,
+    churnedClients: 0,
+    totalCallsToday: 0,
+  };
 }

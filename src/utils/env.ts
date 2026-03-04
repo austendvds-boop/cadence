@@ -24,6 +24,13 @@ const EnvSchema = z.object({
   STRIPE_PRICE_ID: z.string().optional(),
   STRIPE_CHECKOUT_SUCCESS_URL: z.string().optional(),
   STRIPE_CHECKOUT_CANCEL_URL: z.string().optional(),
+  JWT_SECRET: z.string().optional(),
+  ADMIN_EMAIL: z.string().default('aust@autom8everything.com'),
+  SMTP_HOST: z.string().default('smtp.gmail.com'),
+  SMTP_PORT: z.coerce.number().default(587),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  SMTP_FROM: z.string().optional(),
   AUSTEN_CELL_NUMBER: z.string().optional(),
   LOG_LEVEL: z.string().default('info'),
 });

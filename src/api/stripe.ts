@@ -47,11 +47,13 @@ function normalizeAreaCode(value: unknown): string {
   return digits.length === 3 ? digits : '';
 }
 
-function normalizePendingStatus(value: unknown): SubscriptionStatus {
+function normalizeInitialSubscriptionStatus(value: unknown): SubscriptionStatus {
   const normalized = asTrimmedString(value).toLowerCase();
   if (normalized === 'pending') return 'pending';
-  if (normalized === 'trial') return 'trial';
-  return 'pending';
+  if (normalized === 'active') return 'active';
+  if (normalized === 'past_due') return 'past_due';
+  if (normalized === 'canceled') return 'canceled';
+  return 'trial';
 }
 
 function extractAreaCodeFromPhoneNumber(value: string | null | undefined): string {
@@ -609,7 +611,7 @@ export async function handleStripeCheckout(req: Request, res: Response) {
     const ownerPhone = asTrimmedString(body.ownerPhone || body.owner_phone);
     const transferNumber = asTrimmedString(body.transferNumber || body.transfer_number);
     const areaCode = normalizeAreaCode(body.areaCode || body.area_code);
-    const subscriptionStatus = normalizePendingStatus(body.subscriptionStatus || body.subscription_status);
+    const subscriptionStatus = normalizeInitialSubscriptionStatus(body.subscriptionStatus || body.subscription_status);
 
     if (!email || !businessName) {
       return res.status(400).json({ error: 'email and businessName are required' });

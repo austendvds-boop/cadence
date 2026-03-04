@@ -1,9 +1,14 @@
+import cookieParser from 'cookie-parser';
 import express, { type Request, type Response } from 'express';
 import http from 'http';
 import { WebSocketServer } from 'ws';
 import { create } from 'xmlbuilder2';
-import { handlePatchClient } from './api/clients';
+import { handleMagicLinkRequest, handleMagicLinkVerify } from './api/auth';
+import { renderAdmin, renderAdminClient } from './api/admin';
+import { handleClientBillingPortal, handlePatchAdminClient, handlePatchOwnClient } from './api/clients';
+import { renderDashboard } from './api/dashboard';
 import { handleProvisionRequest, handleStripeCheckout, handleStripeWebhook } from './api/stripe';
+import { requireAdmin, requireAuth } from './middleware/auth';
 import { env } from './utils/env';
 import { logger } from './utils/logger';
 import { handleTwilioMedia } from './websocket/handler';
@@ -15,6 +20,7 @@ app.use(express.urlencoded({ extended: true }));
 app.post('/api/stripe/webhook', express.raw({ type: 'application/json' }), handleStripeWebhook);
 
 app.use(express.json());
+app.use(cookieParser());
 app.use(express.static('public'));
 
 function renderVoiceResponse(req: Request): string {
@@ -37,9 +43,20 @@ function handleVoiceRequest(req: Request, res: Response): void {
 }
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
+
 app.post('/api/stripe/checkout', handleStripeCheckout);
 app.post('/api/provision', handleProvisionRequest);
-app.patch('/api/clients/:id', handlePatchClient);
+
+app.post('/api/auth/magic-link', handleMagicLinkRequest);
+app.get('/api/auth/verify', handleMagicLinkVerify);
+
+app.get('/dashboard', requireAuth, renderDashboard);
+app.patch('/api/clients/:id', requireAuth, handlePatchOwnClient);
+app.get('/api/clients/:id/billing-portal', requireAuth, handleClientBillingPortal);
+
+app.get('/admin', requireAuth, requireAdmin, renderAdmin);
+app.get('/admin/client/:id', requireAuth, requireAdmin, renderAdminClient);
+app.patch('/api/admin/clients/:id', requireAuth, requireAdmin, handlePatchAdminClient);
 
 app.post('/incoming-call', handleVoiceRequest);
 app.post('/voice', handleVoiceRequest);

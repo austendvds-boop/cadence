@@ -1,5 +1,43 @@
 # Coder Context
 
+## 2026-03-03 (Onboarding checkout pipeline pending-status hardening)
+- Verified existing onboarding flow already:
+  - Captures `area_code` during intake (`src/config/tenants.ts` onboarding prompt, `save_onboarding_field` schema guidance).
+  - Saves onboarding call fields into DB and upserts a pending client in `complete_onboarding` (`src/tools/executor.ts`).
+  - Calls `POST /api/stripe/checkout` and texts caller with: `Thanks for signing up! Complete your payment to go live: [checkout_url]`.
+- Fixed pending-status typing/validation gaps so pending onboarding state is preserved end-to-end:
+  - Expanded `SubscriptionStatus` union to include `pending` (`src/db/queries.ts`).
+  - Allowed admin/client update parsing to accept `pending` (`src/api/clients.ts`).
+  - Updated Stripe checkout input normalization to preserve `subscription_status: "pending"` instead of coercing to `trial` (`src/api/stripe.ts`).
+  - Added `pending` filter/edit options in admin UI status selects (`src/api/admin.ts`).
+- Build verification: `npm run build` passed (TypeScript compile clean).
+
+## 2026-03-03 (Magic link auth + client dashboard + admin panel)
+- Added cookie-based auth flow:
+  - `POST /api/auth/magic-link` generates a short-lived JWT magic link and sends via Gmail SMTP.
+  - `GET /api/auth/verify?token=...` verifies magic link, sets `HttpOnly` `cadence_token` cookie, and supports redirect to `/dashboard`.
+  - Added auth middleware in `src/middleware/auth.ts`:
+    - `requireAuth` validates cookie/Bearer JWT and loads client from DB.
+    - `requireAdmin` enforces `ADMIN_EMAIL` match (`aust@autom8everything.com` default).
+- Added client dashboard UI route:
+  - `GET /dashboard` server-renders core client data, editable settings, recent 50 calls, and Stripe billing-portal link.
+  - Added billing portal redirect endpoint: `GET /api/clients/:id/billing-portal` (auth + ownership/admin check).
+- Tightened client update endpoint:
+  - `PATCH /api/clients/:id` now requires auth and ownership match.
+  - Allowed fields limited to: `transfer_number`, `hours`, `faqs`, `greeting`.
+- Added admin panel UI routes:
+  - `GET /admin` lists clients, supports status filter, and shows aggregate stats.
+  - `GET /admin/client/:id` renders full client config editor.
+  - `PATCH /api/admin/clients/:id` supports admin override for all mutable client fields.
+- Expanded DB query layer (`src/db/queries.ts`):
+  - Added `listClients`, `getSubscriptionByClientId`, `getClientStats`.
+- Updated env/deps:
+  - Added env vars in parser + `.env.example`: `JWT_SECRET`, `ADMIN_EMAIL`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`.
+  - Added packages: `cookie-parser`, `jsonwebtoken`, `nodemailer` (+ corresponding `@types/*`).
+- Stripe checkout guardrail fix:
+  - Removed invalid `pending` subscription status fallback; checkout now defaults to `trial` to satisfy DB constraint.
+- Build verification: `npm run build` passed (TypeScript compile clean).
+
 ## 2026-03-03 (Automated Twilio provisioning + protected-number release guard)
 - Completed end-to-end provisioning path used by `POST /api/provision` / Stripe webhook provisioning flow in `src/api/stripe.ts`.
 - Provisioning now resolves `clientId` from `client.id`/`client_id` and can fall back to `ownerEmail` lookup when needed.

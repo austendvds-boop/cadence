@@ -139,7 +139,7 @@ async function upsertPendingClient(fields: Record<string, string>, callerNumber?
     hours: parseHours(getOnboardingField(fields, 'hours')),
     faqs: parseFaqs(getOnboardingField(fields, 'faqs')),
     greeting: getOnboardingField(fields, 'greeting') || null,
-    subscriptionStatus: 'pending' as const,
+    subscriptionStatus: 'trial' as const,
   };
 
   if (existingClient) {
@@ -173,7 +173,7 @@ async function createCheckoutLink(payload: {
       ownerPhone: payload.ownerPhone,
       transferNumber: payload.transferNumber,
       areaCode: payload.areaCode,
-      subscriptionStatus: 'pending',
+      subscriptionStatus: 'trial',
     }),
   });
 
