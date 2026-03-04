@@ -1,7 +1,7 @@
 import type { QueryResultRow } from 'pg';
 import { dbQuery } from './client';
 
-export type SubscriptionStatus = 'trial' | 'active' | 'past_due' | 'canceled';
+export type SubscriptionStatus = 'pending' | 'trial' | 'active' | 'past_due' | 'canceled';
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
@@ -19,6 +19,7 @@ export interface Client {
   ownerEmail: string;
   ownerPhone: string | null;
   transferNumber: string | null;
+  areaCode: string | null;
   hours: ClientHours;
   faqs: ClientFaq[];
   greeting: string | null;
@@ -42,6 +43,7 @@ export interface CreateClientInput {
   ownerName?: string | null;
   ownerPhone?: string | null;
   transferNumber?: string | null;
+  areaCode?: string | null;
   hours?: ClientHours;
   faqs?: ClientFaq[];
   greeting?: string | null;
@@ -63,6 +65,7 @@ export interface UpdateClientInput {
   ownerEmail?: string;
   ownerPhone?: string | null;
   transferNumber?: string | null;
+  areaCode?: string | null;
   hours?: ClientHours;
   faqs?: ClientFaq[];
   greeting?: string | null;
@@ -105,6 +108,7 @@ interface ClientRow extends QueryResultRow {
   owner_email: string;
   owner_phone: string | null;
   transfer_number: string | null;
+  area_code: string | null;
   hours: unknown;
   faqs: unknown;
   greeting: string | null;
@@ -173,6 +177,7 @@ function mapClientRow(row: ClientRow): Client {
     ownerEmail: row.owner_email,
     ownerPhone: row.owner_phone,
     transferNumber: row.transfer_number,
+    areaCode: row.area_code,
     hours: asHours(row.hours),
     faqs: asFaqs(row.faqs),
     greeting: row.greeting,
@@ -288,6 +293,7 @@ export async function createClient(input: CreateClientInput): Promise<Client> {
         owner_email,
         owner_phone,
         transfer_number,
+        area_code,
         hours,
         faqs,
         greeting,
@@ -303,8 +309,8 @@ export async function createClient(input: CreateClientInput): Promise<Client> {
         tools_allowed
       )
       VALUES (
-        $1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9,
-        $10, $11, $12, $13, $14, $15, $16, $17, $18::text[]
+        $1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10,
+        $11, $12, $13, $14, $15, $16, $17, $18, $19::text[]
       )
       RETURNING *
     `,
@@ -314,6 +320,7 @@ export async function createClient(input: CreateClientInput): Promise<Client> {
       input.ownerEmail,
       input.ownerPhone ?? null,
       input.transferNumber ?? null,
+      input.areaCode ?? null,
       input.hours ?? {},
       input.faqs ?? [],
       input.greeting ?? null,
@@ -348,6 +355,7 @@ export async function updateClient(clientId: string, input: UpdateClientInput): 
   pushSet('owner_email', input.ownerEmail);
   pushSet('owner_phone', input.ownerPhone);
   pushSet('transfer_number', input.transferNumber);
+  pushSet('area_code', input.areaCode);
   pushSet('hours', input.hours);
   pushSet('faqs', input.faqs);
   pushSet('greeting', input.greeting);

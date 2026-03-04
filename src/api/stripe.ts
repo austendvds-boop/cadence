@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express';
 import Stripe from 'stripe';
+import { invalidateTenantCacheByTwilioNumber } from '../config/tenant-routing';
 import { dbQuery } from '../db/client';
 import {
   createClient,
@@ -12,6 +13,8 @@ import {
   type Client,
   type SubscriptionStatus,
 } from '../db/queries';
+import { provisionIncomingNumber, releaseNumber } from '../twilio/provisioning';
+import { sendSms } from '../twilio/service';
 import { env } from '../utils/env';
 import { logger } from '../utils/logger';
 
@@ -42,6 +45,41 @@ function asTrimmedString(value: unknown): string {
 function normalizeAreaCode(value: unknown): string {
   const digits = asTrimmedString(value).replace(/\D/g, '');
   return digits.length === 3 ? digits : '';
+}
+
+function normalizePendingStatus(value: unknown): SubscriptionStatus {
+  const normalized = asTrimmedString(value).toLowerCase();
+  if (normalized === 'pending') return 'pending';
+  if (normalized === 'trial') return 'trial';
+  return 'pending';
+}
+
+function extractAreaCodeFromPhoneNumber(value: string | null | undefined): string {
+  const digits = asTrimmedString(value).replace(/\D/g, '');
+  if (digits.length === 10) return digits.slice(0, 3);
+  if (digits.length === 11 && digits.startsWith('1')) return digits.slice(1, 4);
+  return '';
+}
+
+function resolveProvisionAreaCode(client: Client, providedAreaCode?: string): string {
+  const preferred = normalizeAreaCode(providedAreaCode || client.areaCode || '');
+  if (preferred) return preferred;
+
+  const transferNumberAreaCode = extractAreaCodeFromPhoneNumber(client.transferNumber);
+  if (transferNumberAreaCode) return transferNumberAreaCode;
+
+  const ownerPhoneAreaCode = extractAreaCodeFromPhoneNumber(client.ownerPhone);
+  if (ownerPhoneAreaCode) return ownerPhoneAreaCode;
+
+  return '';
+}
+
+function getWelcomeSmsDestination(client: Client): string {
+  return asTrimmedString(client.ownerPhone || client.transferNumber || '');
+}
+
+function buildWelcomeSmsMessage(provisionedNumber: string): string {
+  return `Welcome to Cadence! Your AI receptionist is live at ${provisionedNumber}. Forward your business line to this number to get started. Questions? Reply here or call us.`;
 }
 
 function stripeRefToId(value: unknown): string {
@@ -213,20 +251,113 @@ async function findClientForStripeEvent(options: {
   return null;
 }
 
-async function provisionClientInline(clientId: string): Promise<void> {
+type ProvisionClientOptions = {
+  areaCode?: string;
+};
+
+async function provisionClientInline(clientId: string, options: ProvisionClientOptions = {}): Promise<Client> {
   const client = await getClientById(clientId);
   if (!client) {
     throw new Error(`Client ${clientId} not found during provisioning`);
   }
 
+  if (client.subscriptionStatus !== 'trial' && client.subscriptionStatus !== 'active') {
+    throw new Error(`Client ${clientId} is not eligible for provisioning (status: ${client.subscriptionStatus})`);
+  }
+
+  if (client.twilioNumber && client.twilioNumberSid) {
+    if (client.subscriptionStatus !== 'active') {
+      const activatedClient = await updateClient(client.id, { subscriptionStatus: 'active' });
+      return activatedClient ?? client;
+    }
+    return client;
+  }
+
+  const preferredAreaCode = resolveProvisionAreaCode(client, options.areaCode);
+  const provisionedNumber = await provisionIncomingNumber(preferredAreaCode || undefined);
+
+  invalidateTenantCacheByTwilioNumber(client.twilioNumber);
+
+  const updatedClient = await updateClient(client.id, {
+    twilioNumber: provisionedNumber.phoneNumber,
+    twilioNumberSid: provisionedNumber.sid,
+    areaCode: preferredAreaCode || provisionedNumber.areaCode || client.areaCode,
+    subscriptionStatus: 'active',
+  });
+
+  if (!updatedClient) {
+    throw new Error(`Unable to persist Twilio number for client ${client.id}`);
+  }
+
   logger.info(
     {
-      clientId,
-      alreadyHasTwilioNumber: Boolean(client.twilioNumber),
-      subscriptionStatus: client.subscriptionStatus,
+      clientId: updatedClient.id,
+      twilioNumber: updatedClient.twilioNumber,
+      twilioNumberSid: updatedClient.twilioNumberSid,
+      preferredAreaCode: preferredAreaCode || null,
     },
-    'Provisioning trigger acknowledged'
+    'Twilio number provisioned for client'
   );
+
+  invalidateTenantCacheByTwilioNumber(updatedClient.twilioNumber);
+
+  const smsDestination = getWelcomeSmsDestination(updatedClient);
+  if (smsDestination) {
+    try {
+      await sendSms(smsDestination, buildWelcomeSmsMessage(updatedClient.twilioNumber || provisionedNumber.phoneNumber));
+    } catch (error) {
+      logger.error(
+        {
+          error,
+          clientId: updatedClient.id,
+          to: smsDestination,
+          twilioNumber: updatedClient.twilioNumber,
+        },
+        'Failed to send provisioning welcome SMS'
+      );
+    }
+  } else {
+    logger.warn({ clientId: updatedClient.id }, 'No destination phone available for provisioning welcome SMS');
+  }
+
+  return updatedClient;
+}
+
+async function releaseClientNumber(client: Client): Promise<void> {
+  if (!client.twilioNumberSid) {
+    return;
+  }
+
+  const releaseResult = await releaseNumber(client.twilioNumberSid);
+
+  if (releaseResult.released || releaseResult.reason === 'not_found') {
+    logger.info(
+      {
+        clientId: client.id,
+        released: releaseResult.released,
+        reason: releaseResult.reason,
+        phoneNumber: releaseResult.phoneNumber,
+      },
+      'Twilio number released for deactivated client'
+    );
+
+    invalidateTenantCacheByTwilioNumber(client.twilioNumber);
+    await updateClient(client.id, {
+      twilioNumber: null,
+      twilioNumberSid: null,
+    });
+    return;
+  }
+
+  if (releaseResult.reason === 'protected_number') {
+    logger.warn(
+      {
+        clientId: client.id,
+        phoneNumber: releaseResult.phoneNumber,
+      },
+      'Skipped releasing protected Twilio number'
+    );
+  }
 }
 
 async function handleCheckoutSessionCompleted(event: Stripe.Event): Promise<void> {
@@ -236,9 +367,11 @@ async function handleCheckoutSessionCompleted(event: Stripe.Event): Promise<void
   const customerId = stripeRefToId(session.customer);
   const subscriptionId = stripeRefToId(session.subscription);
   const metadata = session.metadata ?? {};
+  const metadataClientId = asTrimmedString(metadata.clientId || metadata.client_id);
+  const metadataAreaCode = normalizeAreaCode(metadata.areaCode || metadata.area_code);
 
   const client = await findClientForStripeEvent({
-    clientId: asTrimmedString(metadata.clientId),
+    clientId: metadataClientId,
     customerId,
     subscriptionId,
     email: asTrimmedString(session.customer_details?.email),
@@ -261,6 +394,7 @@ async function handleCheckoutSessionCompleted(event: Stripe.Event): Promise<void
   const updated = await updateClient(client.id, {
     stripeCustomerId: customerId || client.stripeCustomerId,
     stripeSubscriptionId: subscriptionId || client.stripeSubscriptionId,
+    areaCode: metadataAreaCode || client.areaCode,
     subscriptionStatus: baseStatus,
   });
 
@@ -288,6 +422,7 @@ async function handleCheckoutSessionCompleted(event: Stripe.Event): Promise<void
     const withSubscription = await updateClient(finalClient.id, {
       stripeCustomerId: customerId,
       stripeSubscriptionId: subscription.id,
+      areaCode: metadataAreaCode || finalClient.areaCode,
       subscriptionStatus: mappedStatus,
     });
 
@@ -296,7 +431,7 @@ async function handleCheckoutSessionCompleted(event: Stripe.Event): Promise<void
     }
   }
 
-  await provisionClientInline(finalClient.id);
+  await provisionClientInline(finalClient.id, { areaCode: metadataAreaCode || finalClient.areaCode || '' });
 }
 
 async function handleSubscriptionUpdated(event: Stripe.Event): Promise<void> {
@@ -375,7 +510,9 @@ async function handleSubscriptionDeleted(event: Stripe.Event): Promise<void> {
     });
   }
 
+  await releaseClientNumber(client);
   await deactivateClient(client.id);
+  invalidateTenantCacheByTwilioNumber(client.twilioNumber);
 }
 
 async function handleInvoicePaymentFailed(event: Stripe.Event): Promise<void> {
@@ -424,7 +561,9 @@ async function handleInvoicePaymentFailed(event: Stripe.Event): Promise<void> {
     });
   }
 
+  await releaseClientNumber(client);
   await deactivateClient(client.id);
+  invalidateTenantCacheByTwilioNumber(client.twilioNumber);
 }
 
 export async function handleStripeCheckout(req: Request, res: Response) {
@@ -438,8 +577,11 @@ export async function handleStripeCheckout(req: Request, res: Response) {
     const body = asRecord(req.body);
     const email = asTrimmedString(body.email || body.clientEmail || body.client_email);
     const businessName = asTrimmedString(body.businessName || body.business_name);
+    const ownerName = asTrimmedString(body.ownerName || body.owner_name);
     const ownerPhone = asTrimmedString(body.ownerPhone || body.owner_phone);
+    const transferNumber = asTrimmedString(body.transferNumber || body.transfer_number);
     const areaCode = normalizeAreaCode(body.areaCode || body.area_code);
+    const subscriptionStatus = normalizePendingStatus(body.subscriptionStatus || body.subscription_status);
 
     if (!email || !businessName) {
       return res.status(400).json({ error: 'email and businessName are required' });
@@ -459,16 +601,22 @@ export async function handleStripeCheckout(req: Request, res: Response) {
     const client = existingClient
       ? (await updateClient(existingClient.id, {
           businessName,
+          ownerName: ownerName || existingClient.ownerName,
           ownerPhone: ownerPhone || existingClient.ownerPhone,
+          transferNumber: transferNumber || existingClient.transferNumber,
+          areaCode: areaCode || existingClient.areaCode,
           stripeCustomerId: stripeCustomer.id,
-          subscriptionStatus: 'trial',
+          subscriptionStatus,
         })) ?? existingClient
       : await createClient({
           businessName,
           ownerEmail: email,
+          ownerName: ownerName || null,
           ownerPhone: ownerPhone || null,
+          transferNumber: transferNumber || null,
+          areaCode: areaCode || null,
           stripeCustomerId: stripeCustomer.id,
-          subscriptionStatus: 'trial',
+          subscriptionStatus,
         });
 
     const checkoutSession = await stripe.checkout.sessions.create({
@@ -534,6 +682,7 @@ export async function handleStripeWebhook(req: Request, res: Response) {
       case 'checkout.session.completed':
         await handleCheckoutSessionCompleted(event);
         break;
+      case 'customer.subscription.created':
       case 'customer.subscription.updated':
         await handleSubscriptionUpdated(event);
         break;
@@ -559,14 +708,29 @@ export async function handleStripeWebhook(req: Request, res: Response) {
 export async function handleProvisionRequest(req: Request, res: Response) {
   try {
     const body = asRecord(req.body);
-    const clientId = asTrimmedString(body.clientId || body.client_id);
+    const clientRecord = asRecord(body.client);
 
+    const clientId = asTrimmedString(body.clientId || body.client_id || clientRecord.id);
     if (!clientId) {
       return res.status(400).json({ error: 'clientId is required' });
     }
 
-    await provisionClientInline(clientId);
-    return res.status(200).json({ ok: true, clientId });
+    const areaCode = normalizeAreaCode(
+      body.areaCode
+      || body.area_code
+      || clientRecord.areaCode
+      || clientRecord.area_code
+    );
+
+    const provisionedClient = await provisionClientInline(clientId, { areaCode });
+
+    return res.status(200).json({
+      ok: true,
+      client_id: provisionedClient.id,
+      twilio_number: provisionedClient.twilioNumber,
+      twilio_number_sid: provisionedClient.twilioNumberSid,
+      subscription_status: provisionedClient.subscriptionStatus,
+    });
   } catch (err) {
     logger.error({ err }, 'Provision request failed');
     return res.status(500).json({ error: 'Provision request failed' });

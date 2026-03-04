@@ -53,7 +53,7 @@ const ALL_TOOL_DEFINITIONS: Record<string, FunctionToolDefinition> = {
           field: {
             type: 'string',
             description:
-              'The onboarding field key to save, for example business_name, business_description, hours, services, faqs, greeting, transfer_number, owner_name, owner_email, preferred_area_code.'
+              'The onboarding field key to save, for example business_name, business_description, hours, services, faqs, greeting, transfer_number, owner_name, owner_email, area_code.'
           },
           value: {
             type: 'string',
@@ -69,7 +69,7 @@ const ALL_TOOL_DEFINITIONS: Record<string, FunctionToolDefinition> = {
     type: 'function',
     function: {
       name: 'complete_onboarding',
-      description: 'Complete onboarding and send the collected onboarding JSON summary to the owner via SMS.',
+      description: 'Complete onboarding, create a Stripe checkout link, and text that checkout link to the caller.',
       parameters: {
         type: 'object',
         properties: {},
