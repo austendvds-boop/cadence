@@ -45,13 +45,13 @@ export interface CreateClientInput {
   ownerPhone?: string | null;
   transferNumber?: string | null;
   areaCode?: string | null;
-  hours?: ClientHours;
-  faqs?: ClientFaq[];
+  hours?: ClientHours | null;
+  faqs?: ClientFaq[] | null;
   greeting?: string | null;
   systemPrompt?: string | null;
   twilioNumber?: string | null;
   twilioNumberSid?: string | null;
-  stripeCustomerId?: string | null;
+  stripeCustomerId: string | null;
   stripeSubscriptionId?: string | null;
   subscriptionStatus?: SubscriptionStatus;
   grandfathered?: boolean;
@@ -393,13 +393,13 @@ export async function createClient(input: CreateClientInput): Promise<Client> {
       input.ownerPhone ?? null,
       input.transferNumber ?? null,
       input.areaCode ?? null,
-      input.hours ?? {},
-      input.faqs ?? [],
-      input.greeting ?? '',
-      input.systemPrompt ?? '',
+      input.hours ?? null,
+      input.faqs ?? null,
+      input.greeting ?? null,
+      input.systemPrompt ?? null,
       input.twilioNumber ?? null,
       input.twilioNumberSid ?? null,
-      input.stripeCustomerId ?? null,
+      input.stripeCustomerId,
       input.stripeSubscriptionId ?? null,
       input.subscriptionStatus ?? 'trial',
       input.grandfathered ?? false,

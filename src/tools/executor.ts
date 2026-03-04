@@ -150,6 +150,7 @@ async function upsertPendingClient(fields: Record<string, string>, callerNumber?
   return createClient({
     ...input,
     ownerEmail,
+    stripeCustomerId: null,
   });
 }
 

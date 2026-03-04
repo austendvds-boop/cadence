@@ -48,6 +48,7 @@ async function seedDvdsClient(): Promise<void> {
     twilioNumber: DVDS_NUMBER,
     systemPrompt: dvdsTenant.systemPrompt,
     greeting: dvdsTenant.greeting,
+    stripeCustomerId: null,
     ttsModel: dvdsTenant.ttsModel || 'aura-2-thalia-en',
     sttModel: dvdsTenant.sttModel || 'nova-2',
     toolsAllowed: dvdsTenant.tools,
