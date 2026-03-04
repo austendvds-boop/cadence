@@ -53,7 +53,7 @@ export async function executeTool(name: string, args: unknown, ctx: ToolContext)
   switch (name) {
     case 'transfer_to_human':
       return transferToHuman(ctx.callSid, {
-        ownerCell: ctx.tenant.ownerCell,
+        ownerCell: ctx.tenant.transferNumber || ctx.tenant.ownerCell,
         reason: 'Caller requested human assistance',
       });
 

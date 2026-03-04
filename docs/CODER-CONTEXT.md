@@ -1,5 +1,32 @@
 # Coder Context
 
+## 2026-03-03 (DB-backed tenant routing + 5-minute cache fallback)
+- Implemented DB-first tenant resolution with legacy in-memory safety net:
+  - Added `src/config/tenant-routing.ts` with `resolveTenantByTwilioNumber()`.
+  - Routing order is now: DB (`getClientByTwilioNumber`) -> in-memory legacy (`getTenant`) -> unresolved.
+  - Added in-memory cache keyed by Twilio number with `TENANT_CACHE_TTL_MS = 5 * 60 * 1000`.
+  - Cache stores hits/misses to avoid DB lookup on every call.
+- Updated voice ingress behavior:
+  - `src/index.ts` now serves both `POST /voice` and `POST /incoming-call` via shared handler.
+  - Twilio stream params now include both `toNumber` and `calledNumber` from `req.body.To`.
+  - `src/websocket/handler.ts` now resolves active tenant asynchronously through DB-backed resolver.
+- Added cache invalidation on client updates:
+  - Added `src/api/clients.ts` with `PATCH /api/clients/:id`.
+  - Route updates client fields and invalidates tenant cache by client id and Twilio number.
+- Seeded DVDS via seed script (migration-safe path):
+  - Added `scripts/seed-dvds-client.ts`.
+  - Script upserts DVDS client with:
+    - `business_name`: Deer Valley Driving School
+    - `twilio_number`: `+18773464394`
+    - `subscription_status`: `active`
+    - config copied from legacy DVDS tenant (`systemPrompt`, `greeting`, `ttsModel`, `sttModel`, `tools`).
+  - Added npm script: `db:seed:dvds`.
+- Transfer number wiring:
+  - Added optional `transferNumber` to `TenantConfig` in `src/config/tenants.ts`.
+  - Updated `src/tools/executor.ts` transfer flow to prefer `tenant.transferNumber` over `ownerCell`.
+- Build verification:
+  - `npm run build` passed (TypeScript compile clean).
+
 ## 2026-03-03 (Stripe checkout + webhook billing integration)
 - Installed Stripe SDK dependency (`stripe`) and updated lockfile.
 - Created live Stripe catalog entries:

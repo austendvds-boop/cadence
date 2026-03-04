@@ -5,6 +5,7 @@ export interface TenantConfig {
   systemPrompt: string;
   greeting: string;
   ownerCell: string;
+  transferNumber?: string;
   acuityUserId?: number;
   acuityCalendarIds?: number[];
   appointmentTypeIds?: Record<string, number>;
@@ -82,6 +83,7 @@ const tenantList: TenantConfig[] = [
     systemPrompt: dvdsSystemPrompt,
     greeting: 'Hi, thanks for calling Deer Valley Driving School! This is Cadence, how can I help you today?',
     ownerCell: '+16026633502',
+    transferNumber: '+16026633502',
     tools: ['send_sms', 'transfer_to_human'],
     ttsModel: 'aura-2-thalia-en',
     sttModel: 'nova-2',
@@ -93,6 +95,7 @@ const tenantList: TenantConfig[] = [
     systemPrompt: onboardingSystemPrompt,
     greeting: "Hey there! Thanks for your interest in Cadence. I'm going to ask you a few quick questions about your business so we can get your AI receptionist set up. Sound good?",
     ownerCell: '+16026633502',
+    transferNumber: '+16026633502',
     tools: ['save_onboarding_field', 'complete_onboarding'],
     ttsModel: 'aura-2-thalia-en',
     sttModel: 'nova-2',

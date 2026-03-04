@@ -1,5 +1,5 @@
 import { WebSocket } from 'ws';
-import { getTenant } from '../config/get-tenant';
+import { resolveTenantForIncomingNumber } from '../config/tenant-routing';
 import type { TenantConfig } from '../config/tenants';
 import { runAgentStream, streamDeepgramTTS, type ChatMsg } from '../llm/openai';
 import { createDeepgramBridge, type DeepgramBridge } from '../stt/deepgram';
@@ -787,7 +787,7 @@ export function handleTwilioMedia(ws: WebSocket) {
         callerNumber = getStartParameter(msg.start, ['callerNumber', 'CallerNumber', 'fromNumber', 'From']);
         toNumber = getStartParameter(msg.start, ['toNumber', 'To', 'calledNumber', 'twilioNumber']);
 
-        activeTenant = getTenant(toNumber);
+        activeTenant = await resolveTenantForIncomingNumber(toNumber);
         logger.info({ callerNumber, toNumber, tenantId: activeTenant?.id }, 'stream params resolved');
 
         if (!activeTenant) {
