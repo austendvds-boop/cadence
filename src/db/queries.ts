@@ -2,6 +2,7 @@ import type { QueryResultRow } from 'pg';
 import { dbQuery } from './client';
 
 export type SubscriptionStatus = 'pending' | 'trial' | 'active' | 'past_due' | 'canceled';
+export type ClientStatusFilter = SubscriptionStatus | 'all';
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
@@ -117,8 +118,11 @@ export interface ClientSubscription {
 
 export interface ClientStats {
   totalClients: number;
+  pendingClients: number;
   activeClients: number;
   trialClients: number;
+  pastDueClients: number;
+  canceledClients: number;
   churnedClients: number;
   totalCallsToday: number;
 }
@@ -173,8 +177,11 @@ interface ClientSubscriptionRow extends QueryResultRow {
 
 interface ClientStatsRow extends QueryResultRow {
   total_clients: number;
+  pending_clients: number;
   active_clients: number;
   trial_clients: number;
+  past_due_clients: number;
+  canceled_clients: number;
   churned_clients: number;
   total_calls_today: number;
 }
@@ -270,11 +277,21 @@ function asNumber(value: unknown): number {
   return Number.isFinite(numeric) ? numeric : 0;
 }
 
+function asSubscriptionStatus(value: unknown): SubscriptionStatus | undefined {
+  if (value !== 'pending' && value !== 'trial' && value !== 'active' && value !== 'past_due' && value !== 'canceled') {
+    return undefined;
+  }
+  return value;
+}
+
 function mapClientStatsRow(row: ClientStatsRow): ClientStats {
   return {
     totalClients: asNumber(row.total_clients),
+    pendingClients: asNumber(row.pending_clients),
     activeClients: asNumber(row.active_clients),
     trialClients: asNumber(row.trial_clients),
+    pastDueClients: asNumber(row.past_due_clients),
+    canceledClients: asNumber(row.canceled_clients),
     churnedClients: asNumber(row.churned_clients),
     totalCallsToday: asNumber(row.total_calls_today),
   };
@@ -522,6 +539,14 @@ export async function getCallLogs(clientId: string, limit = 50): Promise<CallLog
   return result.rows.map(mapCallLogRow);
 }
 
+function normalizeClientStatusFilter(status?: string): SubscriptionStatus | undefined {
+  if (!status || status === 'all') {
+    return undefined;
+  }
+
+  return asSubscriptionStatus(status);
+}
+
 export async function listClients(options: {
   status?: string;
   limit?: number;
@@ -529,11 +554,9 @@ export async function listClients(options: {
 } = {}): Promise<Client[]> {
   const safeLimit = Number.isFinite(options.limit) ? Math.max(1, Math.min(500, Math.floor(options.limit as number))) : 100;
   const safeOffset = Number.isFinite(options.offset) ? Math.max(0, Math.floor(options.offset as number)) : 0;
+  const statusFilter = normalizeClientStatusFilter(options.status);
 
-  const status = options.status;
-  const hasStatusFilter = status === 'pending' || status === 'trial' || status === 'active' || status === 'past_due' || status === 'canceled';
-
-  const result = hasStatusFilter
+  const result = statusFilter
     ? await dbQuery<ClientRow>(
       `
         SELECT *
@@ -542,7 +565,7 @@ export async function listClients(options: {
         ORDER BY created_at DESC
         LIMIT $2 OFFSET $3
       `,
-      [status, safeLimit, safeOffset]
+      [statusFilter, safeLimit, safeOffset]
     )
     : await dbQuery<ClientRow>(
       `
@@ -552,6 +575,32 @@ export async function listClients(options: {
         LIMIT $1 OFFSET $2
       `,
       [safeLimit, safeOffset]
+    );
+
+  return result.rows.map(mapClientRow);
+}
+
+export async function listAllClients(options: {
+  status?: ClientStatusFilter | string;
+} = {}): Promise<Client[]> {
+  const statusFilter = normalizeClientStatusFilter(options.status);
+
+  const result = statusFilter
+    ? await dbQuery<ClientRow>(
+      `
+        SELECT *
+        FROM clients
+        WHERE subscription_status = $1
+        ORDER BY created_at DESC
+      `,
+      [statusFilter]
+    )
+    : await dbQuery<ClientRow>(
+      `
+        SELECT *
+        FROM clients
+        ORDER BY created_at DESC
+      `
     );
 
   return result.rows.map(mapClientRow);
@@ -586,8 +635,11 @@ export async function getClientStats(): Promise<ClientStats> {
     `
       SELECT
         COUNT(*)::int AS total_clients,
+        COUNT(*) FILTER (WHERE subscription_status = 'pending')::int AS pending_clients,
         COUNT(*) FILTER (WHERE subscription_status = 'active')::int AS active_clients,
         COUNT(*) FILTER (WHERE subscription_status = 'trial')::int AS trial_clients,
+        COUNT(*) FILTER (WHERE subscription_status = 'past_due')::int AS past_due_clients,
+        COUNT(*) FILTER (WHERE subscription_status = 'canceled')::int AS canceled_clients,
         COUNT(*) FILTER (WHERE subscription_status = 'canceled')::int AS churned_clients,
         (
           SELECT COUNT(*)::int
@@ -601,8 +653,11 @@ export async function getClientStats(): Promise<ClientStats> {
   const row = result.rows[0];
   return row ? mapClientStatsRow(row) : {
     totalClients: 0,
+    pendingClients: 0,
     activeClients: 0,
     trialClients: 0,
+    pastDueClients: 0,
+    canceledClients: 0,
     churnedClients: 0,
     totalCallsToday: 0,
   };

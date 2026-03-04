@@ -4,7 +4,7 @@ import http from 'http';
 import { WebSocketServer } from 'ws';
 import { create } from 'xmlbuilder2';
 import { handleMagicLinkRequest, handleMagicLinkVerify, renderLoginPage } from './api/auth';
-import { renderAdmin, renderAdminClient } from './api/admin';
+import { handleAdminClientsExport, handleAdminClientsList, renderAdmin, renderAdminClient } from './api/admin';
 import { handleClientBillingPortal, handlePatchAdminClient, handlePatchOwnClient } from './api/clients';
 import { renderDashboard } from './api/dashboard';
 import { handleProvisionRequest, handleStripeCheckout, handleStripeWebhook } from './api/stripe';
@@ -57,6 +57,8 @@ app.get('/api/clients/:id/billing-portal', requireAuth, handleClientBillingPorta
 
 app.get('/admin', requirePageAuth, requireAdmin, renderAdmin);
 app.get('/admin/client/:id', requirePageAuth, requireAdmin, renderAdminClient);
+app.get('/api/admin/clients', requireAuth, requireAdmin, handleAdminClientsList);
+app.get('/api/admin/export', requireAuth, requireAdmin, handleAdminClientsExport);
 app.patch('/api/admin/clients/:id', requireAuth, requireAdmin, handlePatchAdminClient);
 
 app.post('/incoming-call', handleVoiceRequest);

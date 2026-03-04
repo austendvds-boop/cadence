@@ -1,5 +1,26 @@
 # Coder Context
 
+## 2026-03-04 (Admin client export: JSON list API + CSV download + admin UI controls)
+- Added admin-only client list/export endpoints in `src/api/admin.ts` and wired routes in `src/index.ts`:
+  - `GET /api/admin/clients` (requires `requireAuth` + `requireAdmin`) returns all matching clients as JSON with fields:
+    - `id`, `business_name`, `owner_name`, `owner_email`, `owner_phone`, `subscription_status`, `twilio_number`, `created_at`, `updated_at`
+  - `GET /api/admin/export` (requires `requireAuth` + `requireAdmin`) returns CSV download with headers:
+    - `Business Name, Owner Name, Email, Phone, Status, Cadence Number, Signup Date`
+  - Both endpoints support `?status=active|trial|canceled|past_due|all` and default to `all`.
+  - CSV response now sets `Content-Type: text/csv; charset=utf-8` and `Content-Disposition` filename format: `cadence-clients-YYYY-MM-DD.csv`.
+- Updated admin panel UI (`GET /admin`, `src/api/admin.ts`):
+  - Added status filter dropdown options: `All`, `Active`, `Trial`, `Canceled`.
+  - Added `Export Clients` button linking to the CSV endpoint with the active filter.
+  - Added total count cards per status category: pending, active, trial, past_due, canceled (plus total + calls today).
+  - Admin table now shows owner name, owner email, owner phone, status, cadence number, and signup date.
+- Extended query layer in `src/db/queries.ts`:
+  - Added `listAllClients({ status })` for unpaginated admin export/list needs.
+  - Added status normalization helper for safe filtering.
+  - Expanded `getClientStats()` to include `pendingClients`, `pastDueClients`, and `canceledClients` (while preserving `churnedClients` compatibility).
+- Scope safety:
+  - No voice routing, tenant config, or non-admin route behavior was modified.
+- Build verification: `npm run build` passed (TypeScript compile clean).
+
 ## 2026-03-04 (Onboarding voice polish + Stripe SMS checkout handoff)
 - Updated onboarding tenant config in `src/config/tenants.ts` for **only** `cadence-onboarding` (`+14806313993`):
   - Greeting is now the requested warm demo line:

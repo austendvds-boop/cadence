@@ -1,6 +1,21 @@
 import type { Request, Response } from 'express';
-import { getClientById, getClientStats, listClients } from '../db/queries';
+import { getClientById, getClientStats, listAllClients, type Client } from '../db/queries';
 import { logger } from '../utils/logger';
+
+type AdminStatusFilter = 'all' | 'active' | 'trial' | 'canceled' | 'past_due';
+
+const API_STATUS_FILTERS: readonly AdminStatusFilter[] = ['all', 'active', 'trial', 'canceled', 'past_due'];
+const UI_STATUS_FILTERS: readonly Exclude<AdminStatusFilter, 'past_due'>[] = ['all', 'active', 'trial', 'canceled'];
+
+const CSV_HEADERS = [
+  'Business Name',
+  'Owner Name',
+  'Email',
+  'Phone',
+  'Status',
+  'Cadence Number',
+  'Signup Date',
+] as const;
 
 function escapeHtml(value: unknown): string {
   const text = typeof value === 'string' ? value : value == null ? '' : String(value);
@@ -16,32 +31,124 @@ function asTrimmedString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function parsePositiveInt(value: unknown, fallback: number): number {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return fallback;
-  return Math.max(0, Math.floor(numeric));
+function parseStatusFilter(value: unknown, allowedFilters: readonly AdminStatusFilter[]): AdminStatusFilter {
+  const normalized = asTrimmedString(value).toLowerCase();
+  if (!normalized) {
+    return 'all';
+  }
+
+  for (const candidate of allowedFilters) {
+    if (normalized === candidate) {
+      return candidate;
+    }
+  }
+
+  return 'all';
+}
+
+function toAdminClientSummary(client: Client) {
+  return {
+    id: client.id,
+    business_name: client.businessName,
+    owner_name: client.ownerName,
+    owner_email: client.ownerEmail,
+    owner_phone: client.ownerPhone,
+    subscription_status: client.subscriptionStatus,
+    twilio_number: client.twilioNumber,
+    created_at: client.createdAt,
+    updated_at: client.updatedAt,
+  };
+}
+
+function csvEscape(value: unknown): string {
+  const text = value == null ? '' : String(value);
+  if (!text) return '';
+
+  const escaped = text.replace(/"/g, '""');
+  return /[",\r\n]/.test(escaped) ? `"${escaped}"` : escaped;
+}
+
+function formatDateOnly(value: Date): string {
+  return value.toISOString().slice(0, 10);
+}
+
+function toClientsCsv(clients: Client[]): string {
+  const lines: string[] = [CSV_HEADERS.join(',')];
+
+  for (const client of clients) {
+    const row = [
+      client.businessName,
+      client.ownerName ?? '',
+      client.ownerEmail,
+      client.ownerPhone ?? '',
+      client.subscriptionStatus,
+      client.twilioNumber ?? '',
+      formatDateOnly(client.createdAt),
+    ];
+
+    lines.push(row.map(csvEscape).join(','));
+  }
+
+  return `${lines.join('\r\n')}\r\n`;
+}
+
+function statusToQueryValue(status: AdminStatusFilter): string {
+  return encodeURIComponent(status);
+}
+
+export async function handleAdminClientsList(req: Request, res: Response) {
+  try {
+    const status = parseStatusFilter(req.query.status, API_STATUS_FILTERS);
+    const clients = await listAllClients({ status });
+
+    return res.status(200).json(clients.map(toAdminClientSummary));
+  } catch (err) {
+    logger.error({ err }, 'GET /api/admin/clients failed');
+    return res.status(500).json({ error: 'Failed to load clients' });
+  }
+}
+
+export async function handleAdminClientsExport(req: Request, res: Response) {
+  try {
+    const status = parseStatusFilter(req.query.status, API_STATUS_FILTERS);
+    const clients = await listAllClients({ status });
+    const csv = toClientsCsv(clients);
+    const today = formatDateOnly(new Date());
+    const filename = `cadence-clients-${today}.csv`;
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+    return res.status(200).send(csv);
+  } catch (err) {
+    logger.error({ err }, 'GET /api/admin/export failed');
+    return res.status(500).json({ error: 'Failed to export clients' });
+  }
 }
 
 export async function renderAdmin(req: Request, res: Response) {
   try {
-    const status = asTrimmedString(req.query.status) || undefined;
-    const limit = parsePositiveInt(req.query.limit, 100);
-    const offset = parsePositiveInt(req.query.offset, 0);
+    const status = parseStatusFilter(req.query.status, UI_STATUS_FILTERS);
 
     const [clients, stats] = await Promise.all([
-      listClients({ status, limit, offset }),
+      listAllClients({ status }),
       getClientStats(),
     ]);
 
     const rows = clients.map((client) => {
       return `<tr>
         <td>${escapeHtml(client.businessName)}</td>
+        <td>${escapeHtml(client.ownerName || '—')}</td>
         <td>${escapeHtml(client.ownerEmail)}</td>
+        <td>${escapeHtml(client.ownerPhone || '—')}</td>
         <td>${escapeHtml(client.subscriptionStatus)}</td>
         <td>${escapeHtml(client.twilioNumber || '—')}</td>
+        <td>${escapeHtml(formatDateOnly(client.createdAt))}</td>
         <td><a href="/admin/client/${escapeHtml(client.id)}">Open</a></td>
       </tr>`;
     }).join('');
+
+    const exportHref = `/api/admin/export?status=${statusToQueryValue(status)}`;
 
     const page = `<!doctype html>
 <html>
@@ -51,14 +158,15 @@ export async function renderAdmin(req: Request, res: Response) {
     <title>Cadence Admin</title>
     <style>
       body { font-family: Arial, sans-serif; margin: 20px; color: #111; }
-      .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin: 12px 0 20px; }
+      .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin: 12px 0 20px; }
       .card { border: 1px solid #ddd; border-radius: 8px; padding: 10px; background: #fafafa; }
       table { width: 100%; border-collapse: collapse; }
       th, td { text-align: left; border-bottom: 1px solid #e5e5e5; padding: 8px; font-size: 14px; }
-      .filters { margin-bottom: 12px; display: flex; gap: 8px; align-items: end; }
+      .filters { margin-bottom: 14px; display: flex; gap: 8px; align-items: end; }
       label { font-size: 13px; display: block; margin-bottom: 4px; }
-      select, input, button { padding: 6px; }
-      button { background: #111; color: #fff; border: 0; border-radius: 6px; cursor: pointer; }
+      select, button, .button { padding: 8px 10px; border-radius: 6px; font-size: 14px; }
+      button, .button { background: #111; color: #fff; border: 0; cursor: pointer; text-decoration: none; display: inline-block; }
+      .muted { color: #666; font-size: 13px; margin-bottom: 10px; }
     </style>
   </head>
   <body>
@@ -66,9 +174,11 @@ export async function renderAdmin(req: Request, res: Response) {
 
     <div class="stats">
       <div class="card"><strong>Total clients</strong><div>${stats.totalClients}</div></div>
+      <div class="card"><strong>Pending</strong><div>${stats.pendingClients}</div></div>
       <div class="card"><strong>Active</strong><div>${stats.activeClients}</div></div>
       <div class="card"><strong>Trial</strong><div>${stats.trialClients}</div></div>
-      <div class="card"><strong>Churned</strong><div>${stats.churnedClients}</div></div>
+      <div class="card"><strong>Past due</strong><div>${stats.pastDueClients}</div></div>
+      <div class="card"><strong>Canceled</strong><div>${stats.canceledClients}</div></div>
       <div class="card"><strong>Total calls today</strong><div>${stats.totalCallsToday}</div></div>
     </div>
 
@@ -76,26 +186,23 @@ export async function renderAdmin(req: Request, res: Response) {
       <div>
         <label>Status</label>
         <select name="status">
-          <option value="" ${status ? '' : 'selected'}>All</option>
-          <option value="pending" ${status === 'pending' ? 'selected' : ''}>pending</option>
-          <option value="active" ${status === 'active' ? 'selected' : ''}>active</option>
-          <option value="trial" ${status === 'trial' ? 'selected' : ''}>trial</option>
-          <option value="past_due" ${status === 'past_due' ? 'selected' : ''}>past_due</option>
-          <option value="canceled" ${status === 'canceled' ? 'selected' : ''}>canceled</option>
+          <option value="all" ${status === 'all' ? 'selected' : ''}>All</option>
+          <option value="active" ${status === 'active' ? 'selected' : ''}>Active</option>
+          <option value="trial" ${status === 'trial' ? 'selected' : ''}>Trial</option>
+          <option value="canceled" ${status === 'canceled' ? 'selected' : ''}>Canceled</option>
         </select>
       </div>
-      <div>
-        <label>Limit</label>
-        <input type="number" name="limit" value="${limit}" min="1" max="500" />
-      </div>
       <button type="submit">Apply</button>
+      <a class="button" href="${exportHref}">Export Clients</a>
     </form>
+
+    <p class="muted">Showing ${clients.length} client(s) for filter: <strong>${escapeHtml(status)}</strong></p>
 
     <table>
       <thead>
-        <tr><th>Business</th><th>Owner Email</th><th>Status</th><th>Cadence Number</th><th></th></tr>
+        <tr><th>Business</th><th>Owner</th><th>Email</th><th>Phone</th><th>Status</th><th>Cadence Number</th><th>Signup Date</th><th></th></tr>
       </thead>
-      <tbody>${rows || '<tr><td colspan="5">No clients found.</td></tr>'}</tbody>
+      <tbody>${rows || '<tr><td colspan="8">No clients found.</td></tr>'}</tbody>
     </table>
   </body>
 </html>`;
