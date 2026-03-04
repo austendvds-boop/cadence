@@ -272,7 +272,7 @@ export async function handleMagicLinkVerify(req: Request, res: Response) {
 
     res.cookie(SESSION_COOKIE_NAME, sessionToken, {
       httpOnly: true,
-      sameSite: 'strict',
+      sameSite: 'lax',
       secure: env.BASE_URL.startsWith('https://'),
       maxAge: 7 * 24 * 60 * 60 * 1000,
       path: '/',
