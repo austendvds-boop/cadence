@@ -1,5 +1,30 @@
 # Coder Context
 
+## 2026-03-04 (Onboarding voice polish + Stripe SMS checkout handoff)
+- Updated onboarding tenant config in `src/config/tenants.ts` for **only** `cadence-onboarding` (`+14806313993`):
+  - Greeting is now the requested warm demo line:
+    - `Hi! Welcome to Cadence. I'm your AI receptionist demo — and by the end of this call, I can have your own AI receptionist up and running. Let me ask you a few quick questions to get started.`
+  - Rewrote onboarding system prompt to be conversational, natural, and reactive (one question at a time, follow-up clarifications, no robotic intake phrasing).
+  - Added explicit exploratory path: if caller is not ready, answer Cadence questions (pricing `$199/mo`, `7-day free trial`, features/how it works), do not force intake, and close with:
+    - `When you're ready, just call back and we'll get you set up in about 5 minutes.`
+  - Added explicit success script after onboarding completion:
+    - `Perfect — I've got everything I need. I'm texting you a link right now to complete your payment. Once you pay, your AI receptionist number will be live in about 2 minutes. Pretty cool, right?`
+- Updated onboarding tool schema guidance in `src/llm/tools.ts`:
+  - `save_onboarding_field` now documents the required intake keys:
+    - `business_name`, `owner_name`, `owner_email`, `owner_phone`, `business_description`, `hours`, `faqs`, `transfer_number`, `area_code`.
+  - `complete_onboarding` description now reflects Stripe SMS flow to collected `owner_phone`.
+- Updated onboarding execution flow in `src/tools/executor.ts`:
+  - Added required-field gating before `complete_onboarding` proceeds; returns `missing_fields` if intake is incomplete.
+  - Normalized onboarding phone inputs (`owner_phone`, `transfer_number`) to E.164 where possible and normalized `area_code`.
+  - Upsert now stores onboarding records as `subscriptionStatus: 'pending'` before payment link completion.
+  - Used `business_description` to generate/store a client `systemPrompt` for post-payment receptionist behavior.
+  - Checkout creation now passes `subscriptionStatus: 'pending'` to `/api/stripe/checkout`.
+  - `complete_onboarding` now sends the requested SMS copy to collected `owner_phone`:
+    - `Complete your Cadence setup: [checkout_url] — Your AI receptionist will be live in minutes after payment.`
+  - Tool result includes `customer_message` with the exact required spoken completion line for model follow-through.
+- Safety/Scope: no changes were made to DVDS tenant config or any non-onboarding tenant.
+- Build verification: `npm run build` passed (TypeScript compile clean).
+
 ## 2026-03-03 (Auto-deactivation on Stripe churn + grandfathered guard)
 - Stripe webhook churn handling now routes through a single helper in `src/api/stripe.ts`:
   - `customer.subscription.deleted` now calls `deactivateClient(client.id)`.

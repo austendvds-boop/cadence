@@ -12,6 +12,35 @@ type ToolContext = {
 };
 
 const ONBOARDING_TENANT_ID = 'cadence-onboarding';
+const REQUIRED_ONBOARDING_FIELDS = [
+  'business_name',
+  'owner_name',
+  'owner_email',
+  'owner_phone',
+  'business_description',
+  'hours',
+  'faqs',
+  'transfer_number',
+  'area_code',
+] as const;
+
+const ONBOARDING_FIELD_ALIASES: Record<(typeof REQUIRED_ONBOARDING_FIELDS)[number], string[]> = {
+  business_name: ['business_name'],
+  owner_name: ['owner_name'],
+  owner_email: ['owner_email', 'email'],
+  owner_phone: ['owner_phone', 'phone', 'phone_number', 'sms_phone'],
+  business_description: ['business_description', 'what_business_does', 'description'],
+  hours: ['hours', 'business_hours'],
+  faqs: ['faqs', 'common_questions', 'common_caller_questions'],
+  transfer_number: ['transfer_number', 'human_transfer_number'],
+  area_code: ['area_code', 'preferred_area_code'],
+};
+
+const ONBOARDING_PAYMENT_SMS_TEMPLATE = (checkoutUrl: string) =>
+  `Complete your Cadence setup: ${checkoutUrl} — Your AI receptionist will be live in minutes after payment.`;
+
+const ONBOARDING_COMPLETION_VOICE_LINE =
+  "Perfect — I've got everything I need. I'm texting you a link right now to complete your payment. Once you pay, your AI receptionist number will be live in about 2 minutes. Pretty cool, right?";
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
@@ -33,13 +62,28 @@ function isOnboardingTenant(tenant: TenantConfig): boolean {
   return tenant.id === ONBOARDING_TENANT_ID;
 }
 
-function getOnboardingField(fields: Record<string, string>, key: string): string {
-  return asTrimmedString(fields[key]);
+function getOnboardingField(fields: Record<string, string>, key: (typeof REQUIRED_ONBOARDING_FIELDS)[number]): string {
+  const aliases = ONBOARDING_FIELD_ALIASES[key] || [key];
+  for (const alias of aliases) {
+    const value = asTrimmedString(fields[alias]);
+    if (value) return value;
+  }
+  return '';
 }
 
-function firstNonEmpty(...values: string[]): string {
+function hasCollectedOnboardingField(fields: Record<string, string>, key: (typeof REQUIRED_ONBOARDING_FIELDS)[number]): boolean {
+  const aliases = ONBOARDING_FIELD_ALIASES[key] || [key];
+  return aliases.some((alias) => asTrimmedString(fields[alias]).length > 0);
+}
+
+function listMissingOnboardingFields(fields: Record<string, string>): string[] {
+  return REQUIRED_ONBOARDING_FIELDS.filter((key) => !hasCollectedOnboardingField(fields, key));
+}
+
+function firstNonEmpty(...values: Array<string | null | undefined>): string {
   for (const value of values) {
-    if (value) return value;
+    const normalized = asTrimmedString(value);
+    if (normalized) return normalized;
   }
   return '';
 }
@@ -47,6 +91,42 @@ function firstNonEmpty(...values: string[]): string {
 function normalizeAreaCode(value: string): string {
   const digits = value.replace(/\D/g, '');
   return digits.length === 3 ? digits : '';
+}
+
+function normalizePhoneNumber(value: string): string {
+  const trimmed = asTrimmedString(value);
+  if (!trimmed) return '';
+
+  const digits = trimmed.replace(/\D/g, '');
+  if (trimmed.startsWith('+')) {
+    return digits ? `+${digits}` : '';
+  }
+
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
+  return '';
+}
+
+function isProvidedValue(value: string): boolean {
+  const normalized = asTrimmedString(value).toLowerCase();
+  return Boolean(normalized && normalized !== 'not provided');
+}
+
+function buildClientSystemPrompt(businessName: string, businessDescription: string, faqs: ClientFaq[]): string {
+  const summary = isProvidedValue(businessDescription)
+    ? businessDescription
+    : 'Provide friendly, concise help to callers and route urgent calls to a human when needed.';
+
+  const faqLines = faqs
+    .filter((faq) => faq.q.trim())
+    .slice(0, 6)
+    .map((faq) => `- ${faq.q.trim()}${faq.a.trim() ? `: ${faq.a.trim()}` : ''}`);
+
+  const faqBlock = faqLines.length > 0
+    ? `\n\nCommon caller questions:\n${faqLines.join('\n')}`
+    : '';
+
+  return `You are Cadence, the AI receptionist for ${businessName}. Be warm, concise, and helpful on phone calls.\n\nBusiness summary: ${summary}${faqBlock}`;
 }
 
 function parseHours(value: string): ClientHours {
@@ -106,26 +186,20 @@ function parseFaqs(value: string): ClientFaq[] {
 }
 
 async function upsertPendingClient(fields: Record<string, string>, callerNumber?: string) {
-  const businessName = firstNonEmpty(
-    getOnboardingField(fields, 'business_name'),
-    'Cadence Client'
-  );
-  const ownerName = firstNonEmpty(
-    getOnboardingField(fields, 'owner_name'),
-    'Cadence Customer'
-  );
+  const businessName = firstNonEmpty(getOnboardingField(fields, 'business_name'), 'Cadence Client');
+  const ownerName = firstNonEmpty(getOnboardingField(fields, 'owner_name'), 'Cadence Customer');
   const ownerEmail = getOnboardingField(fields, 'owner_email').toLowerCase();
   const ownerPhone = firstNonEmpty(
-    getOnboardingField(fields, 'owner_phone'),
-    asTrimmedString(callerNumber)
+    normalizePhoneNumber(getOnboardingField(fields, 'owner_phone')),
+    normalizePhoneNumber(asTrimmedString(callerNumber))
   );
-  const transferNumber = getOnboardingField(fields, 'transfer_number');
-  const areaCode = normalizeAreaCode(firstNonEmpty(
-    getOnboardingField(fields, 'area_code'),
-    getOnboardingField(fields, 'preferred_area_code')
-  ));
+  const transferNumber = normalizePhoneNumber(getOnboardingField(fields, 'transfer_number'));
+  const areaCode = normalizeAreaCode(getOnboardingField(fields, 'area_code'));
+  const businessDescription = getOnboardingField(fields, 'business_description');
+  const hours = parseHours(getOnboardingField(fields, 'hours'));
+  const faqs = parseFaqs(getOnboardingField(fields, 'faqs'));
 
-  if (!ownerEmail) {
+  if (!isProvidedValue(ownerEmail)) {
     throw new Error('Owner email is required before completing onboarding.');
   }
 
@@ -136,10 +210,11 @@ async function upsertPendingClient(fields: Record<string, string>, callerNumber?
     ownerPhone: ownerPhone || null,
     transferNumber: transferNumber || null,
     areaCode: areaCode || null,
-    hours: parseHours(getOnboardingField(fields, 'hours')),
-    faqs: parseFaqs(getOnboardingField(fields, 'faqs')),
-    greeting: getOnboardingField(fields, 'greeting') || null,
-    subscriptionStatus: 'trial' as const,
+    hours,
+    faqs,
+    greeting: `Hi, thanks for calling ${businessName}! This is Cadence, how can I help you today?`,
+    systemPrompt: buildClientSystemPrompt(businessName, businessDescription, faqs),
+    subscriptionStatus: 'pending' as const,
   };
 
   if (existingClient) {
@@ -174,7 +249,7 @@ async function createCheckoutLink(payload: {
       ownerPhone: payload.ownerPhone,
       transferNumber: payload.transferNumber,
       areaCode: payload.areaCode,
-      subscriptionStatus: 'trial',
+      subscriptionStatus: 'pending',
     }),
   });
 
@@ -226,10 +301,18 @@ export async function executeTool(name: string, args: unknown, ctx: ToolContext)
 
       const parsedArgs = asRecord(args);
       const field = asTrimmedString(parsedArgs.field);
-      const value = asTrimmedString(parsedArgs.value) || 'not provided';
+      const rawValue = asTrimmedString(parsedArgs.value);
 
       if (!field) {
         return { ok: false, error: 'Missing required field name.' };
+      }
+
+      let value = rawValue || 'not provided';
+      if ((field === 'owner_phone' || field === 'transfer_number') && isProvidedValue(value)) {
+        value = normalizePhoneNumber(value) || value;
+      }
+      if (field === 'area_code' && isProvidedValue(value)) {
+        value = normalizeAreaCode(value) || value;
       }
 
       ctx.onboardingFields[field] = value;
@@ -242,6 +325,15 @@ export async function executeTool(name: string, args: unknown, ctx: ToolContext)
       }
 
       try {
+        const missingFields = listMissingOnboardingFields(ctx.onboardingFields);
+        if (missingFields.length > 0) {
+          return {
+            ok: false,
+            error: `Missing required onboarding fields: ${missingFields.join(', ')}`,
+            missing_fields: missingFields,
+          };
+        }
+
         const pendingClient = await upsertPendingClient(ctx.onboardingFields, ctx.callerNumber);
         const checkoutUrl = await createCheckoutLink({
           businessName: pendingClient.businessName,
@@ -252,27 +344,29 @@ export async function executeTool(name: string, args: unknown, ctx: ToolContext)
           areaCode: pendingClient.areaCode,
         });
 
-        const destination = firstNonEmpty(
-          asTrimmedString(ctx.callerNumber),
-          asTrimmedString(pendingClient.ownerPhone)
-        );
+        const destination = normalizePhoneNumber(firstNonEmpty(
+          getOnboardingField(ctx.onboardingFields, 'owner_phone'),
+          pendingClient.ownerPhone,
+        ));
 
         if (!destination || !isE164PhoneNumber(destination)) {
           return {
             ok: false,
-            error: 'Checkout link created but no valid caller phone number was available for SMS delivery.',
+            error: 'Checkout link created but no valid owner_phone was available for SMS delivery.',
             checkout_url: checkoutUrl,
           };
         }
 
-        await sendSms(destination, `Thanks for signing up! Complete your payment to go live: ${checkoutUrl}`);
+        const smsMessage = ONBOARDING_PAYMENT_SMS_TEMPLATE(checkoutUrl);
+        await sendSms(destination, smsMessage);
 
         return {
           ok: true,
           clientId: pendingClient.id,
           checkout_url: checkoutUrl,
           sentTo: destination,
-          message: 'Checkout link sent to caller.',
+          message: 'Stripe checkout link sent via SMS.',
+          customer_message: ONBOARDING_COMPLETION_VOICE_LINE,
         };
       } catch (error) {
         logger.error({ error, callSid: ctx.callSid, onboardingFields: ctx.onboardingFields }, 'complete_onboarding failed');
