@@ -4,7 +4,7 @@ import { logger } from '../utils/logger';
 import { normalizePhoneNumber, type TenantConfig } from './tenants';
 
 const TENANT_CACHE_TTL_MS = 5 * 60 * 1000;
-const CORE_TENANT_KEYS = new Set(['dvds', 'cadence-onboarding']);
+const CORE_TENANT_KEYS = new Set(['dvds']);
 
 type CachedTenant = {
   tenant: TenantConfig | null;

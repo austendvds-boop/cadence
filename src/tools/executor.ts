@@ -1,8 +1,5 @@
 import type { TenantConfig } from '../config/tenants';
-import type { ClientFaq, ClientHours } from '../db/queries';
-import { bootstrapTenantFromBaseline } from '../tenants/bootstrap-orchestrator';
 import { sendSms, transferToHuman } from '../twilio/service';
-import { env } from '../utils/env';
 import { logger } from '../utils/logger';
 
 type ToolContext = {
@@ -14,35 +11,27 @@ type ToolContext = {
 
 const REQUIRED_ONBOARDING_FIELDS = [
   'business_name',
-  'owner_name',
-  'owner_email',
-  'owner_phone',
-  'business_description',
-  'hours',
+  'business_type',
+  'business_hours',
+  'services_and_pricing',
   'faqs',
-  'transfer_number',
-  'area_code',
+  'call_handling',
+  'contact_email',
 ] as const;
 
 const ONBOARDING_FIELD_ALIASES: Record<(typeof REQUIRED_ONBOARDING_FIELDS)[number], string[]> = {
-  business_name: ['business_name'],
-  owner_name: ['owner_name'],
-  owner_email: ['owner_email', 'email'],
-  owner_phone: ['owner_phone', 'phone', 'phone_number', 'sms_phone'],
-  business_description: ['business_description', 'what_business_does', 'description'],
-  hours: ['hours', 'business_hours'],
+  business_name: ['business_name', 'company_name'],
+  business_type: ['business_type', 'business_description', 'what_type_of_business'],
+  business_hours: ['business_hours', 'hours'],
+  services_and_pricing: ['services_and_pricing', 'services', 'products_and_prices'],
   faqs: ['faqs', 'common_questions', 'common_caller_questions'],
-  transfer_number: ['transfer_number', 'human_transfer_number'],
-  area_code: ['area_code', 'preferred_area_code'],
+  call_handling: ['call_handling', 'call_flow', 'how_to_handle_calls'],
+  contact_email: ['contact_email', 'owner_email', 'email'],
 };
 
-const ONBOARDING_PAYMENT_SMS_TEMPLATE = (checkoutUrl: string) =>
-  `Complete your Cadence setup: ${checkoutUrl} — Your AI receptionist will be live in minutes after payment.`;
-
-const ONBOARDING_COMPLETION_VOICE_LINE =
-  "Perfect — I've got everything I need. I'm texting you a link right now to complete your payment. Once you pay, your AI receptionist number will be live in about 2 minutes. Pretty cool, right?";
-const ONBOARDING_SMS_FALLBACK_VOICE_LINE =
-  "Perfect — I've got everything I need. I couldn't send the text just now, likely due to carrier restrictions. Please go to autom8everything.com/onboarding to finish payment, and your AI receptionist will go live right after checkout.";
+const ONBOARDING_SUMMARY_SMS_TO = '+17607158498';
+const ONBOARDING_COMPLETE_VOICE_LINE =
+  "You're all set! Someone from our team will reach out within 24 hours to get your AI agent live. Thanks for choosing Autom8!";
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
@@ -86,187 +75,31 @@ function firstNonEmpty(...values: Array<string | null | undefined>): string {
   return '';
 }
 
-function normalizeAreaCode(value: string): string {
-  const digits = value.replace(/\D/g, '');
-  return digits.length === 3 ? digits : '';
-}
-
-function normalizePhoneNumber(value: string): string {
-  const trimmed = asTrimmedString(value);
-  if (!trimmed) return '';
-
-  const digits = trimmed.replace(/\D/g, '');
-  if (trimmed.startsWith('+')) {
-    return digits ? `+${digits}` : '';
-  }
-
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
-  return '';
-}
-
-function isProvidedValue(value: string): boolean {
-  const normalized = asTrimmedString(value).toLowerCase();
-  return Boolean(normalized && normalized !== 'not provided');
-}
-
 function toolErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown tool error';
 }
 
-function parseHours(value: string): ClientHours {
-  if (!value) return {};
+function buildOnboardingSummary(ctx: ToolContext): string {
+  const businessName = getOnboardingField(ctx.onboardingFields, 'business_name') || 'not provided';
+  const businessType = getOnboardingField(ctx.onboardingFields, 'business_type') || 'not provided';
+  const businessHours = getOnboardingField(ctx.onboardingFields, 'business_hours') || 'not provided';
+  const servicesAndPricing = getOnboardingField(ctx.onboardingFields, 'services_and_pricing') || 'not provided';
+  const faqs = getOnboardingField(ctx.onboardingFields, 'faqs') || 'not provided';
+  const callHandling = getOnboardingField(ctx.onboardingFields, 'call_handling') || 'not provided';
+  const contactEmail = getOnboardingField(ctx.onboardingFields, 'contact_email') || 'not provided';
 
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      const output: ClientHours = {};
-      for (const [key, raw] of Object.entries(parsed as Record<string, unknown>)) {
-        if (typeof raw === 'string' && raw.trim()) {
-          output[key] = raw.trim();
-        }
-      }
-      if (Object.keys(output).length > 0) {
-        return output;
-      }
-    }
-  } catch {
-    // fall through to simple text storage
-  }
-
-  return { general: value };
-}
-
-function parseFaqs(value: string): ClientFaq[] {
-  if (!value) return [];
-
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (Array.isArray(parsed)) {
-      const faqs: ClientFaq[] = [];
-      for (const item of parsed) {
-        if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
-        const q = asTrimmedString((item as Record<string, unknown>).q);
-        const a = asTrimmedString((item as Record<string, unknown>).a);
-        if (q) {
-          faqs.push({ q, a });
-        }
-      }
-      if (faqs.length > 0) {
-        return faqs;
-      }
-    }
-  } catch {
-    // fall through to line split
-  }
-
-  const lines = value
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(0, 8);
-
-  if (lines.length === 0) return [];
-  return lines.map((line) => ({ q: line, a: '' }));
-}
-
-async function bootstrapPendingClientFromOnboarding(fields: Record<string, string>, callerNumber?: string) {
-  const businessName = firstNonEmpty(getOnboardingField(fields, 'business_name'), 'Cadence Client');
-  const ownerName = firstNonEmpty(getOnboardingField(fields, 'owner_name'), 'Cadence Customer');
-  const ownerEmail = getOnboardingField(fields, 'owner_email').toLowerCase();
-  const ownerPhone = firstNonEmpty(
-    normalizePhoneNumber(getOnboardingField(fields, 'owner_phone')),
-    normalizePhoneNumber(asTrimmedString(callerNumber))
-  );
-  const transferNumber = firstNonEmpty(
-    normalizePhoneNumber(getOnboardingField(fields, 'transfer_number')),
-    ownerPhone,
-  );
-  const areaCode = normalizeAreaCode(getOnboardingField(fields, 'area_code'));
-  const businessDescription = getOnboardingField(fields, 'business_description');
-  const hours = parseHours(getOnboardingField(fields, 'hours'));
-  const faqs = parseFaqs(getOnboardingField(fields, 'faqs'));
-
-  if (!isProvidedValue(ownerEmail)) {
-    throw new Error('Owner email is required before completing onboarding.');
-  }
-
-  const bootstrap = await bootstrapTenantFromBaseline({
-    request: {
-      source: 'onboarding_voice',
-      overrides: {
-        business: {
-          businessName,
-          businessDescription: isProvidedValue(businessDescription) ? businessDescription : '',
-        },
-        contact: {
-          ownerName: ownerName || null,
-          ownerEmail,
-          ownerPhone: ownerPhone || null,
-          transferNumber: transferNumber || null,
-        },
-        routing: {
-          areaCode: areaCode || null,
-        },
-        operations: {
-          hours,
-          faqs,
-        },
-        script: {
-          greetingOpening: null,
-          customBusinessRules: [],
-        },
-      },
-    },
-    system: {
-      subscriptionStatus: 'pending',
-      grandfathered: false,
-    },
-  });
-
-  return bootstrap.client;
-}
-
-async function createCheckoutLink(payload: {
-  businessName: string;
-  ownerName: string | null;
-  ownerEmail: string;
-  ownerPhone: string | null;
-  transferNumber: string | null;
-  areaCode: string | null;
-  businessDescription: string;
-  hours: ClientHours;
-  faqs: ClientFaq[];
-  customBusinessRules: string[];
-}): Promise<string> {
-  const response = await fetch(`${env.BASE_URL}/api/stripe/checkout`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      email: payload.ownerEmail,
-      businessName: payload.businessName,
-      ownerName: payload.ownerName,
-      ownerPhone: payload.ownerPhone,
-      transferNumber: payload.transferNumber,
-      areaCode: payload.areaCode,
-      businessDescription: payload.businessDescription,
-      hours: payload.hours,
-      faqs: payload.faqs,
-      customBusinessRules: payload.customBusinessRules,
-      subscriptionStatus: 'pending',
-    }),
-  });
-
-  const result = await response.json().catch(() => ({} as Record<string, unknown>));
-  const checkoutUrl = asTrimmedString((result as Record<string, unknown>).url);
-
-  if (!response.ok || !checkoutUrl) {
-    throw new Error(`Failed to generate checkout link (${response.status})`);
-  }
-
-  return checkoutUrl;
+  return [
+    'New Cadence onboarding call intake',
+    `Business name: ${businessName}`,
+    `Business type: ${businessType}`,
+    `Business hours: ${businessHours}`,
+    `Services/products + pricing: ${servicesAndPricing}`,
+    `Common caller FAQs: ${faqs}`,
+    `Preferred call handling: ${callHandling}`,
+    `Best contact email: ${contactEmail}`,
+    `Caller number: ${firstNonEmpty(ctx.callerNumber, 'unknown')}`,
+    `Call SID: ${ctx.callSid}`,
+  ].join('\n');
 }
 
 export async function executeTool(name: string, args: unknown, ctx: ToolContext) {
@@ -303,18 +136,10 @@ export async function executeTool(name: string, args: unknown, ctx: ToolContext)
     case 'save_onboarding_field': {
       const parsedArgs = asRecord(args);
       const field = asTrimmedString(parsedArgs.field);
-      const rawValue = asTrimmedString(parsedArgs.value);
+      const value = asTrimmedString(parsedArgs.value) || 'not provided';
 
       if (!field) {
         return { ok: false, error: 'Missing required field name.' };
-      }
-
-      let value = rawValue || 'not provided';
-      if ((field === 'owner_phone' || field === 'transfer_number') && isProvidedValue(value)) {
-        value = normalizePhoneNumber(value) || value;
-      }
-      if (field === 'area_code' && isProvidedValue(value)) {
-        value = normalizeAreaCode(value) || value;
       }
 
       ctx.onboardingFields[field] = value;
@@ -333,68 +158,22 @@ export async function executeTool(name: string, args: unknown, ctx: ToolContext)
           };
         }
 
-        const pendingClient = await bootstrapPendingClientFromOnboarding(ctx.onboardingFields, ctx.callerNumber);
-        const checkoutUrl = await createCheckoutLink({
-          businessName: pendingClient.businessName,
-          ownerName: pendingClient.ownerName,
-          ownerEmail: pendingClient.ownerEmail,
-          ownerPhone: pendingClient.ownerPhone,
-          transferNumber: pendingClient.transferNumber,
-          areaCode: pendingClient.areaCode,
-          businessDescription: getOnboardingField(ctx.onboardingFields, 'business_description'),
-          hours: pendingClient.hours,
-          faqs: pendingClient.faqs,
-          customBusinessRules: [],
-        });
-
-        const destination = normalizePhoneNumber(firstNonEmpty(
-          getOnboardingField(ctx.onboardingFields, 'owner_phone'),
-          pendingClient.ownerPhone,
-        ));
-
-        const smsMessage = ONBOARDING_PAYMENT_SMS_TEMPLATE(checkoutUrl);
-        let smsAttempted = false;
-        let smsSent = false;
-        let smsError = '';
-
-        if (destination && isE164PhoneNumber(destination)) {
-          smsAttempted = true;
-          try {
-            await sendSms(destination, smsMessage);
-            smsSent = true;
-          } catch (error) {
-            smsError = toolErrorMessage(error);
-            logger.warn(
-              { callSid: ctx.callSid, destination, smsError },
-              '[ONBOARDING] complete_onboarding SMS failed; using spoken fallback'
-            );
-          }
-        } else {
-          smsError = 'No valid owner_phone was available for SMS delivery.';
-          logger.warn({ callSid: ctx.callSid, destination }, '[ONBOARDING] complete_onboarding missing valid SMS destination');
-        }
+        const summaryBody = buildOnboardingSummary(ctx);
+        await sendSms(ONBOARDING_SUMMARY_SMS_TO, summaryBody);
 
         const result = {
           ok: true,
-          clientId: pendingClient.id,
-          checkout_url: checkoutUrl,
-          sms_attempted: smsAttempted,
-          sms_sent: smsSent,
-          sentTo: smsSent ? destination : undefined,
-          sms_error: smsSent ? undefined : smsError,
-          message: smsSent
-            ? 'Stripe checkout link sent via SMS.'
-            : 'Checkout link created; SMS delivery failed, using spoken fallback.',
-          customer_message: smsSent ? ONBOARDING_COMPLETION_VOICE_LINE : ONBOARDING_SMS_FALLBACK_VOICE_LINE,
+          summary_sms_sent: true,
+          summary_sms_to: ONBOARDING_SUMMARY_SMS_TO,
+          message: 'Onboarding summary sent to Autom8 team.',
+          customer_message: ONBOARDING_COMPLETE_VOICE_LINE,
         };
 
         logger.info(
           {
             callSid: ctx.callSid,
-            clientId: pendingClient.id,
-            smsAttempted,
-            smsSent,
-            smsError: smsSent ? undefined : smsError,
+            summarySmsTo: ONBOARDING_SUMMARY_SMS_TO,
+            tenantId: ctx.tenant.id,
           },
           '[ONBOARDING] complete_onboarding result'
         );
@@ -404,6 +183,8 @@ export async function executeTool(name: string, args: unknown, ctx: ToolContext)
         logger.error({ error, callSid: ctx.callSid, onboardingFields: ctx.onboardingFields }, '[ONBOARDING] complete_onboarding failed');
         return {
           ok: false,
+          summary_sms_sent: false,
+          summary_sms_to: ONBOARDING_SUMMARY_SMS_TO,
           error: toolErrorMessage(error) || 'Unable to complete onboarding at the moment.',
         };
       }

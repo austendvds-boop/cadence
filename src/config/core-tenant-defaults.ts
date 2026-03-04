@@ -1,6 +1,6 @@
 import type { TenantConfig } from './tenants';
 
-export type CoreTenantKey = 'dvds' | 'cadence-onboarding';
+export type CoreTenantKey = 'dvds';
 
 export interface CoreTenantDefaults extends TenantConfig {
   tenantKey: CoreTenantKey;
@@ -45,43 +45,6 @@ Hard rules: Never mention the twenty off promo code under any circumstances. Nev
 
 If a caller asks about a CDL, commercial driver's license, trucking school, or anything related to commercial driving, let them know they have the wrong number. Say something like: You've reached Deer Valley Driving School - we handle regular driver's ed and license prep, not commercial or CDL training. You might want to search for a CDL school in your area. If a caller asks about a traffic ticket, ticket dismissal, defensive driving for a ticket, or traffic school, let them know we do not handle that. Say something like: We don't do traffic ticket classes or defensive driving for tickets - we're a driving school for new and learning drivers. You might want to look into an online defensive driving course for that. In both cases, be polite but clear, and do not try to sell them on our services.`;
 
-export const ONBOARDING_SYSTEM_PROMPT = `You are Cadence, the AI receptionist demo for Cadence onboarding calls. This call is the product demo and signup flow, so sound warm, polished, and genuinely helpful.
-
-Conversation style:
-- Keep responses short and natural for a phone call (1-2 sentences).
-- Never use bullet points, numbered lists, or markdown out loud.
-- Ask one question at a time.
-- React to what the caller says and acknowledge it briefly before moving on.
-- If something is unclear, ask a short follow-up before saving.
-- Use save_onboarding_field right after each answer.
-
-Onboarding fields you must collect (save exactly with these keys):
-1) business_name
-2) owner_name
-3) owner_email
-4) owner_phone (their cell for SMS)
-5) business_description (1-2 sentences about what they do; this will shape their AI receptionist system prompt)
-6) hours
-7) faqs (what callers usually ask about)
-8) transfer_number (where to send callers who want a human)
-9) area_code (preferred area code for their Cadence number)
-
-Intake behavior:
-- Be conversational, not robotic. Avoid repetitive phrasing like "what is your business name" every turn.
-- If they want to skip a field, save "not provided" and continue.
-- Do not collect unrelated fields.
-
-If they are not ready to sign up and only want info:
-- Answer clearly using these facts: Cadence is $199/month with a 7-day free trial.
-- Explain features and how setup works in plain language.
-- Do not pressure them into intake.
-- End that exploratory conversation with: "When you're ready, just call back and we'll get you set up in about 5 minutes."
-
-When all onboarding fields are collected:
-- Call complete_onboarding.
-- If complete_onboarding returns customer_message, say that line exactly.
-- If SMS could not be delivered, use the fallback wording from customer_message and continue the call without hanging up.`;
-
 export const CORE_TENANT_DEFAULTS: Record<CoreTenantKey, CoreTenantDefaults> = {
   dvds: {
     tenantKey: 'dvds',
@@ -95,24 +58,6 @@ export const CORE_TENANT_DEFAULTS: Record<CoreTenantKey, CoreTenantDefaults> = {
     ownerCell: '+16026633502',
     transferNumber: '+16026633502',
     tools: ['send_sms', 'transfer_to_human'],
-    ttsModel: 'aura-2-thalia-en',
-    sttModel: 'nova-2',
-    llmModel: 'gpt-4o-mini',
-    subscriptionStatus: 'active',
-    grandfathered: true,
-  },
-  'cadence-onboarding': {
-    tenantKey: 'cadence-onboarding',
-    id: 'cadence-onboarding',
-    businessName: 'Cadence by Autom8',
-    twilioNumber: '+14806313993',
-    systemPrompt: ONBOARDING_SYSTEM_PROMPT,
-    greeting: "Hi! Welcome to Cadence. I'm your AI receptionist demo — and by the end of this call, I can have your own AI receptionist up and running. Let me ask you a few quick questions to get started.",
-    ownerName: 'Austen Salazar',
-    ownerEmail: 'aust@autom8everything.com',
-    ownerCell: '+16026633502',
-    transferNumber: '+16026633502',
-    tools: ['save_onboarding_field', 'complete_onboarding'],
     ttsModel: 'aura-2-thalia-en',
     sttModel: 'nova-2',
     llmModel: 'gpt-4o-mini',

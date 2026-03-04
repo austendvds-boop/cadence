@@ -56,13 +56,13 @@ INSERT INTO clients (
   tenant_key,
   bootstrap_state
 ) VALUES (
-  'Cadence by Autom8',
+  'Autom8 Everything - Cadence Onboarding',
   'Austen Salazar',
   'aust@autom8everything.com',
-  '+16026633502',
-  '+16026633502',
+  '+17607158498',
+  '+17607158498',
   '+14806313993',
-  'Hi! Welcome to Cadence. I''m your AI receptionist demo — and by the end of this call, I can have your own AI receptionist up and running. Let me ask you a few quick questions to get started.',
+  'Hey! Thanks for calling Autom8. I''m Cadence — I help set up AI phone agents for businesses. Mind if I ask you a few quick questions so we can get yours rolling?',
   NULL,
   'active',
   true,
@@ -70,7 +70,7 @@ INSERT INTO clients (
   'aura-2-thalia-en',
   'nova-2',
   'gpt-4o-mini',
-  'cadence-onboarding',
+  'autom8-onboarding',
   'active'
 )
 ON CONFLICT (twilio_number) DO NOTHING;
