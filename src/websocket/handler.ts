@@ -7,6 +7,32 @@ import { sendSms } from '../twilio/service';
 
 type TwilioMsg = { event: string; streamSid?: string; start?: any; media?: { payload: string } };
 
+function parseJsonSafe<T>(raw: string, source: string): T | null {
+  try {
+    return JSON.parse(raw) as T;
+  } catch (err) {
+    logger.error({ err, source, raw: raw.slice(0, 500) }, 'JSON parse failed');
+    return null;
+  }
+}
+
+function safeSend(ws: WebSocket, data: string, source: string) {
+  if (ws.readyState !== WebSocket.OPEN) {
+    logger.warn({ source, readyState: ws.readyState }, 'WebSocket not open; skipping send');
+    return;
+  }
+
+  try {
+    ws.send(data, (err) => {
+      if (err) {
+        logger.error({ err, source }, 'WebSocket send callback error');
+      }
+    });
+  } catch (err) {
+    logger.error({ err, source }, 'WebSocket send threw');
+  }
+}
+
 function isAbortError(err: unknown): boolean {
   if (err instanceof Error) {
     return err.name === 'AbortError' || err.message.toLowerCase().includes('abort');
@@ -296,7 +322,7 @@ export function handleTwilioMedia(ws: WebSocket) {
     }
 
     if (isSpeaking || speaking) {
-      ws.send(JSON.stringify({ event: 'clear', streamSid }));
+      safeSend(ws, JSON.stringify({ event: 'clear', streamSid }), 'abort_active_response_clear');
       isSpeaking = false;
       speaking = false;
       aborted = true;
@@ -351,7 +377,7 @@ export function handleTwilioMedia(ws: WebSocket) {
     if (!streamSid) return;
     ASCENDING_CHIME_FRAMES.forEach((payload, index) => {
       setTimeout(() => {
-        ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
+        safeSend(ws, JSON.stringify({ event: 'media', streamSid, media: { payload } }), 'processing_chime_media');
       }, index * 20);
     });
   }
@@ -372,7 +398,7 @@ export function handleTwilioMedia(ws: WebSocket) {
             speaking = true;
           }
           if (!isSpeaking || !speaking) return;
-          ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
+          safeSend(ws, JSON.stringify({ event: 'media', streamSid, media: { payload } }), 'tts_stream_media');
         },
         controller.signal
       );
@@ -473,7 +499,20 @@ export function handleTwilioMedia(ws: WebSocket) {
         history.push({ role: 'assistant', content: msg.content ?? null, tool_calls: msg.tool_calls } as any);
         for (const c of msg.tool_calls as any[]) {
           if (c.type !== 'function' || !c.function) continue;
-          const args = JSON.parse(c.function.arguments || '{}');
+
+          const rawArgs = c.function.arguments || '{}';
+          const args = parseJsonSafe<Record<string, unknown>>(rawArgs, `tool_arguments:${c.function.name || 'unknown'}`);
+          if (!args) {
+            logger.warn({ tool: c.function.name, rawArgs: rawArgs.slice(0, 500) }, 'skipping tool call due to invalid JSON arguments');
+            history.push({
+              role: 'tool',
+              name: c.function.name,
+              tool_call_id: c.id,
+              content: JSON.stringify({ error: 'Invalid tool arguments JSON' })
+            });
+            continue;
+          }
+
           logger.info({ tool: c.function.name, args }, 'tool call');
           try {
             const result = await executeTool(c.function.name, args, { callSid, callerNumber });
@@ -512,7 +551,10 @@ export function handleTwilioMedia(ws: WebSocket) {
   }
 
   ws.on('message', async (raw) => {
-    const msg = JSON.parse(raw.toString()) as TwilioMsg;
+    const rawText = raw.toString();
+    const msg = parseJsonSafe<TwilioMsg>(rawText, 'twilio_ws_message');
+    if (!msg) return;
+
     if (msg.event === 'start') {
       try {
         streamSid = msg.start?.streamSid;
@@ -537,7 +579,7 @@ export function handleTwilioMedia(ws: WebSocket) {
         let chunkCount = 0;
         await streamDeepgramTTS(oneChunkStream(greeting), (payload) => {
           if (!introPlaying) return;
-          ws.send(JSON.stringify({ event: 'media', streamSid, media: { payload } }));
+          safeSend(ws, JSON.stringify({ event: 'media', streamSid, media: { payload } }), 'greeting_media');
           chunkCount++;
         });
         const streamDuration = Date.now() - streamStart;
