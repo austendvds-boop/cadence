@@ -336,6 +336,7 @@ export function handleTwilioMedia(ws: WebSocket) {
   >();
   const pendingUtterances: string[] = [];
   const history: ChatMsg[] = [];
+  let sttUnavailableLogged = false;
 
   function resolvePendingPlaybackMarks(reason: string) {
     for (const [markName, pending] of Array.from(pendingPlaybackMarks.entries())) {
@@ -799,7 +800,22 @@ export function handleTwilioMedia(ws: WebSocket) {
     if (msg.event === 'media' && msg.media?.payload) {
       // Keep STT hot even while Cadence is speaking so barge-in can be detected.
       if (!introPlaying) {
-        dg.sendMulaw(Buffer.from(msg.media.payload, 'base64'));
+        if (!dg.isHealthy()) {
+          if (!sttUnavailableLogged) {
+            logger.warn('Deepgram STT unavailable; continuing call without STT');
+            sttUnavailableLogged = true;
+          }
+        } else {
+          const sent = dg.sendMulaw(Buffer.from(msg.media.payload, 'base64'));
+          if (!sent) {
+            if (!sttUnavailableLogged) {
+              logger.warn('Deepgram STT send failed; continuing call without STT');
+              sttUnavailableLogged = true;
+            }
+          } else {
+            sttUnavailableLogged = false;
+          }
+        }
       }
       logger.debug('incoming audio packet');
     }

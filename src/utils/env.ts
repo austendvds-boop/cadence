@@ -14,6 +14,7 @@ const EnvSchema = z.object({
   DEEPGRAM_API_KEY: z.string().optional(),
   UTTERANCE_END_MS: z.coerce.number().default(700),
   ENDPOINTING_MS: z.coerce.number().default(250),
+  MAX_HISTORY_MESSAGES: z.coerce.number().default(20),
   TWILIO_ACCOUNT_SID: z.string().optional(),
   TWILIO_AUTH_TOKEN: z.string().optional(),
   TWILIO_PHONE_NUMBER: z.string().optional(),

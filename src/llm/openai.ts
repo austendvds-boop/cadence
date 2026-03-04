@@ -27,12 +27,53 @@ type RequestOptions = {
   signal?: AbortSignal;
 };
 
+const DEFAULT_MAX_HISTORY_MESSAGES = 20;
+
+function getMaxHistoryMessages(): number {
+  const configured = Number(env.MAX_HISTORY_MESSAGES);
+  if (!Number.isFinite(configured) || configured <= 0) {
+    return DEFAULT_MAX_HISTORY_MESSAGES;
+  }
+  return Math.floor(configured);
+}
+
+function buildMessagesWithSlidingWindow(messages: ChatMsg[]): ChatMsg[] {
+  const maxHistoryMessages = getMaxHistoryMessages();
+  let remainingNonSystemMessages = maxHistoryMessages;
+  const keptReversed: ChatMsg[] = [];
+  let totalNonSystemMessages = 0;
+
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!message) continue;
+
+    if (message.role === 'system') {
+      keptReversed.push(message);
+      continue;
+    }
+
+    totalNonSystemMessages += 1;
+    if (remainingNonSystemMessages > 0) {
+      keptReversed.push(message);
+      remainingNonSystemMessages -= 1;
+    }
+  }
+
+  const droppedNonSystemMessages = Math.max(0, totalNonSystemMessages - maxHistoryMessages);
+  if (droppedNonSystemMessages > 0) {
+    logger.debug({ droppedNonSystemMessages, maxHistoryMessages }, 'Trimmed chat history with sliding window');
+  }
+
+  return [{ role: 'system', content: SYSTEM_PROMPT }, ...keptReversed.reverse()];
+}
+
 export async function runAgent(messages: ChatMsg[], options: RequestOptions = {}) {
   if (!llmClient) throw new Error('Missing OPENAI_API_KEY or GROQ_API_KEY');
+
   const response = await llmClient.chat.completions.create({
     model: LLM_MODEL,
     temperature: 0.7,
-    messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages] as any,
+    messages: buildMessagesWithSlidingWindow(messages) as any,
     tools: toolDefinitions as any,
   }, {
     signal: options.signal,
@@ -47,7 +88,7 @@ export async function runAgentStream(messages: ChatMsg[], onToken: (token: strin
     model: LLM_MODEL,
     temperature: 0.7,
     stream: true,
-    messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages] as any,
+    messages: buildMessagesWithSlidingWindow(messages) as any,
     tools: toolDefinitions as any,
   }, {
     signal: options.signal,
