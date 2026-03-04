@@ -7,6 +7,7 @@ export type SttCallbacks = {
   onFinal: (text: string) => void;
   onUtteranceEnd: () => void;
   onSpeechStarted: () => void;
+  onConnected?: () => void;
 };
 
 export type DeepgramBridge = {
@@ -35,26 +36,47 @@ const DEFAULT_DEEPGRAM_STT_MODEL = 'nova-2';
 const MIN_UTTERANCE_END_MS = 1000;
 const MIN_ENDPOINTING_MS = 10;
 
-function getDeepgramListenUrl(model: string): string {
-  const utteranceEndMs = Math.max(MIN_UTTERANCE_END_MS, env.UTTERANCE_END_MS);
-  const endpointingMs = Math.max(MIN_ENDPOINTING_MS, env.ENDPOINTING_MS);
+export type EffectiveDeepgramSttConfig = {
+  model: string;
+  utteranceEndMs: number;
+  endpointingMs: number;
+};
 
-  if (utteranceEndMs !== env.UTTERANCE_END_MS) {
+export function getEffectiveDeepgramSttConfig(input: {
+  model?: string;
+  utteranceEndMs?: number;
+  endpointingMs?: number;
+} = {}): EffectiveDeepgramSttConfig {
+  const model = input.model?.trim() || DEFAULT_DEEPGRAM_STT_MODEL;
+  const configuredUtteranceEndMs = input.utteranceEndMs ?? env.UTTERANCE_END_MS;
+  const configuredEndpointingMs = input.endpointingMs ?? env.ENDPOINTING_MS;
+
+  return {
+    model,
+    utteranceEndMs: Math.max(MIN_UTTERANCE_END_MS, configuredUtteranceEndMs),
+    endpointingMs: Math.max(MIN_ENDPOINTING_MS, configuredEndpointingMs),
+  };
+}
+
+function getDeepgramListenUrl(model: string): string {
+  const effectiveConfig = getEffectiveDeepgramSttConfig({ model });
+
+  if (effectiveConfig.utteranceEndMs !== env.UTTERANCE_END_MS) {
     logger.warn(
-      { configured: env.UTTERANCE_END_MS, applied: utteranceEndMs },
+      { configured: env.UTTERANCE_END_MS, applied: effectiveConfig.utteranceEndMs },
       'UTTERANCE_END_MS too low for Deepgram live WebSocket; clamping to safe minimum'
     );
   }
 
-  if (endpointingMs !== env.ENDPOINTING_MS) {
+  if (effectiveConfig.endpointingMs !== env.ENDPOINTING_MS) {
     logger.warn(
-      { configured: env.ENDPOINTING_MS, applied: endpointingMs },
+      { configured: env.ENDPOINTING_MS, applied: effectiveConfig.endpointingMs },
       'ENDPOINTING_MS too low; clamping to Deepgram-safe minimum'
     );
   }
 
   const params = new URLSearchParams({
-    model,
+    model: effectiveConfig.model,
     language: 'en-US',
     encoding: 'mulaw',
     sample_rate: '8000',
@@ -62,8 +84,8 @@ function getDeepgramListenUrl(model: string): string {
     punctuate: 'true',
     smart_format: 'true',
     interim_results: 'true',
-    utterance_end_ms: String(utteranceEndMs),
-    endpointing: String(endpointingMs),
+    utterance_end_ms: String(effectiveConfig.utteranceEndMs),
+    endpointing: String(effectiveConfig.endpointingMs),
     vad_events: 'true',
   });
 
@@ -167,6 +189,7 @@ export function createDeepgramBridge(cb: SttCallbacks, options: DeepgramBridgeOp
       reconnectAttempts = 0;
       isHealthy = true;
       logger.info({ model: sttModel }, 'Deepgram connected');
+      cb.onConnected?.();
     });
 
     socket.on('message', (data) => {

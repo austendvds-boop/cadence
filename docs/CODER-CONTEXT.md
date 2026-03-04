@@ -1,5 +1,39 @@
 # Coder Context
 
+## 2026-03-04 (Onboarding pipeline hard reset to stable baseline + health instrumentation)
+- Pulled latest `main` first and kept prior STT 400 safety clamp behavior intact (`src/stt/deepgram.ts`).
+- Added production onboarding reset script: `scripts/reset-onboarding-client.ts` (`npm run db:reset:onboarding`).
+  - Deletes only client rows for onboarding number `+14806313993`.
+  - Recreates one clean onboarding client row from `src/config/tenants.ts` defaults (`cadence-onboarding`) with:
+    - owner email `aust@autom8everything.com`
+    - status `active`
+    - tools `save_onboarding_field`, `complete_onboarding`
+    - greeting/system prompt/stt/tts/transfer number from code defaults.
+  - Verifies exactly one onboarding row exists afterward and guards against touching DVDS `+18773464394`.
+- Fixed onboarding tenant detection in tool executor so DB-resolved onboarding tenants (`client-*` ids) still run onboarding tools by protected onboarding number (`+14806313993`).
+- Simplified and hardened onboarding completion path in `src/tools/executor.ts`:
+  - always validates required fields,
+  - creates checkout link,
+  - attempts SMS send,
+  - logs clear `[ONBOARDING] complete_onboarding ...` outcomes,
+  - on SMS failure (10DLC/config issues), returns success with explicit spoken fallback instead of hanging/failing call flow.
+- Added onboarding call health instrumentation in `src/websocket/handler.ts`:
+  - `[ONBOARDING] stream start`
+  - `[ONBOARDING] STT connected`
+  - `[ONBOARDING] first transcript token`
+  - `[ONBOARDING] first model response token`
+- Added deterministic smoke test script: `scripts/smoke-onboarding.ts` (`npm run smoke:onboarding`).
+  - Verifies onboarding tenant resolution by `+14806313993`.
+  - Verifies STT parameters are valid/clamped via exported Deepgram effective-config helper.
+  - Verifies checkout endpoint returns a URL.
+  - Verifies `complete_onboarding` returns success object with expected keys (`checkout_url`, `sms_attempted`, `sms_sent`, `customer_message`).
+- Fixed JSONB update serialization in `src/db/queries.ts` so `hours`/`faqs` write reliably in onboarding upserts (prevents `invalid input syntax for type json`).
+- Verification run:
+  - `npm run build` ✅
+  - `npm run db:reset:onboarding` ✅
+  - `npm run smoke:onboarding` ✅ (checkout URL returned; complete_onboarding succeeded with SMS fallback when SMS unavailable)
+  - Immediate startup log check (`node dist/index.js`) showed clean startup with no immediate Deepgram 400.
+
 ## 2026-03-04 (Dashboard/Admin/Login UI overhaul to Autom8 dark design system)
 - Added shared app shell helper in `src/api/ui-shell.ts`:
   - `renderAppShell(...)` now provides reusable page shell (head, top nav/header, main, footer).

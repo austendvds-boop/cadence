@@ -415,8 +415,8 @@ export async function createClient(input: CreateClientInput): Promise<Client> {
       input.ownerPhone ?? null,
       input.transferNumber ?? null,
       input.areaCode ?? null,
-      input.hours ?? null,
-      input.faqs ?? null,
+      input.hours == null ? null : JSON.stringify(input.hours),
+      input.faqs == null ? null : JSON.stringify(input.faqs),
       input.greeting ?? null,
       input.systemPrompt ?? null,
       input.twilioNumber ?? null,
@@ -439,10 +439,10 @@ export async function updateClient(clientId: string, input: UpdateClientInput): 
   const setClauses: string[] = [];
   const values: unknown[] = [];
 
-  const pushSet = (column: string, value: unknown) => {
+  const pushSet = (column: string, value: unknown, cast = '') => {
     if (value === undefined) return;
     values.push(value);
-    setClauses.push(`${column} = $${values.length}`);
+    setClauses.push(`${column} = $${values.length}${cast}`);
   };
 
   pushSet('business_name', input.businessName);
@@ -451,8 +451,8 @@ export async function updateClient(clientId: string, input: UpdateClientInput): 
   pushSet('owner_phone', input.ownerPhone);
   pushSet('transfer_number', input.transferNumber);
   pushSet('area_code', input.areaCode);
-  pushSet('hours', input.hours);
-  pushSet('faqs', input.faqs);
+  pushSet('hours', input.hours === undefined ? undefined : JSON.stringify(input.hours), '::jsonb');
+  pushSet('faqs', input.faqs === undefined ? undefined : JSON.stringify(input.faqs), '::jsonb');
   pushSet('greeting', input.greeting);
   pushSet('system_prompt', input.systemPrompt);
   pushSet('twilio_number', input.twilioNumber);
@@ -464,7 +464,7 @@ export async function updateClient(clientId: string, input: UpdateClientInput): 
   pushSet('tts_model', input.ttsModel);
   pushSet('stt_model', input.sttModel);
   pushSet('llm_model', input.llmModel);
-  pushSet('tools_allowed', input.toolsAllowed);
+  pushSet('tools_allowed', input.toolsAllowed, '::text[]');
 
   if (setClauses.length === 0) {
     return getClientById(clientId);

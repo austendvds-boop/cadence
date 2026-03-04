@@ -12,6 +12,7 @@ type ToolContext = {
 };
 
 const ONBOARDING_TENANT_ID = 'cadence-onboarding';
+const ONBOARDING_TWILIO_NUMBER = '+14806313993';
 const REQUIRED_ONBOARDING_FIELDS = [
   'business_name',
   'owner_name',
@@ -41,6 +42,8 @@ const ONBOARDING_PAYMENT_SMS_TEMPLATE = (checkoutUrl: string) =>
 
 const ONBOARDING_COMPLETION_VOICE_LINE =
   "Perfect — I've got everything I need. I'm texting you a link right now to complete your payment. Once you pay, your AI receptionist number will be live in about 2 minutes. Pretty cool, right?";
+const ONBOARDING_SMS_FALLBACK_VOICE_LINE =
+  "Perfect — I've got everything I need. I couldn't send the text just now, likely due to carrier restrictions. Please go to autom8everything.com/onboarding to finish payment, and your AI receptionist will go live right after checkout.";
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
@@ -59,7 +62,7 @@ function isToolEnabledForTenant(name: string, tenant: TenantConfig): boolean {
 }
 
 function isOnboardingTenant(tenant: TenantConfig): boolean {
-  return tenant.id === ONBOARDING_TENANT_ID;
+  return tenant.id === ONBOARDING_TENANT_ID || normalizePhoneNumber(tenant.twilioNumber) === ONBOARDING_TWILIO_NUMBER;
 }
 
 function getOnboardingField(fields: Record<string, string>, key: (typeof REQUIRED_ONBOARDING_FIELDS)[number]): string {
@@ -110,6 +113,10 @@ function normalizePhoneNumber(value: string): string {
 function isProvidedValue(value: string): boolean {
   const normalized = asTrimmedString(value).toLowerCase();
   return Boolean(normalized && normalized !== 'not provided');
+}
+
+function toolErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : 'Unknown tool error';
 }
 
 function buildClientSystemPrompt(businessName: string, businessDescription: string, faqs: ClientFaq[]): string {
@@ -327,6 +334,7 @@ export async function executeTool(name: string, args: unknown, ctx: ToolContext)
       try {
         const missingFields = listMissingOnboardingFields(ctx.onboardingFields);
         if (missingFields.length > 0) {
+          logger.info({ callSid: ctx.callSid, missingFields }, '[ONBOARDING] complete_onboarding missing required fields');
           return {
             ok: false,
             error: `Missing required onboarding fields: ${missingFields.join(', ')}`,
@@ -349,30 +357,59 @@ export async function executeTool(name: string, args: unknown, ctx: ToolContext)
           pendingClient.ownerPhone,
         ));
 
-        if (!destination || !isE164PhoneNumber(destination)) {
-          return {
-            ok: false,
-            error: 'Checkout link created but no valid owner_phone was available for SMS delivery.',
-            checkout_url: checkoutUrl,
-          };
+        const smsMessage = ONBOARDING_PAYMENT_SMS_TEMPLATE(checkoutUrl);
+        let smsAttempted = false;
+        let smsSent = false;
+        let smsError = '';
+
+        if (destination && isE164PhoneNumber(destination)) {
+          smsAttempted = true;
+          try {
+            await sendSms(destination, smsMessage);
+            smsSent = true;
+          } catch (error) {
+            smsError = toolErrorMessage(error);
+            logger.warn(
+              { callSid: ctx.callSid, destination, smsError },
+              '[ONBOARDING] complete_onboarding SMS failed; using spoken fallback'
+            );
+          }
+        } else {
+          smsError = 'No valid owner_phone was available for SMS delivery.';
+          logger.warn({ callSid: ctx.callSid, destination }, '[ONBOARDING] complete_onboarding missing valid SMS destination');
         }
 
-        const smsMessage = ONBOARDING_PAYMENT_SMS_TEMPLATE(checkoutUrl);
-        await sendSms(destination, smsMessage);
-
-        return {
+        const result = {
           ok: true,
           clientId: pendingClient.id,
           checkout_url: checkoutUrl,
-          sentTo: destination,
-          message: 'Stripe checkout link sent via SMS.',
-          customer_message: ONBOARDING_COMPLETION_VOICE_LINE,
+          sms_attempted: smsAttempted,
+          sms_sent: smsSent,
+          sentTo: smsSent ? destination : undefined,
+          sms_error: smsSent ? undefined : smsError,
+          message: smsSent
+            ? 'Stripe checkout link sent via SMS.'
+            : 'Checkout link created; SMS delivery failed, using spoken fallback.',
+          customer_message: smsSent ? ONBOARDING_COMPLETION_VOICE_LINE : ONBOARDING_SMS_FALLBACK_VOICE_LINE,
         };
+
+        logger.info(
+          {
+            callSid: ctx.callSid,
+            clientId: pendingClient.id,
+            smsAttempted,
+            smsSent,
+            smsError: smsSent ? undefined : smsError,
+          },
+          '[ONBOARDING] complete_onboarding result'
+        );
+
+        return result;
       } catch (error) {
-        logger.error({ error, callSid: ctx.callSid, onboardingFields: ctx.onboardingFields }, 'complete_onboarding failed');
+        logger.error({ error, callSid: ctx.callSid, onboardingFields: ctx.onboardingFields }, '[ONBOARDING] complete_onboarding failed');
         return {
           ok: false,
-          error: error instanceof Error ? error.message : 'Unable to complete onboarding at the moment.',
+          error: toolErrorMessage(error) || 'Unable to complete onboarding at the moment.',
         };
       }
     }

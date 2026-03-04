@@ -82,7 +82,8 @@ If they are not ready to sign up and only want info:
 
 When all onboarding fields are collected:
 - Call complete_onboarding.
-- If complete_onboarding succeeds, say exactly: "Perfect — I've got everything I need. I'm texting you a link right now to complete your payment. Once you pay, your AI receptionist number will be live in about 2 minutes. Pretty cool, right?"`;
+- If complete_onboarding returns customer_message, say that line exactly.
+- If SMS could not be delivered, use the fallback wording from customer_message and continue the call without hanging up.`;
 
 const tenantList: TenantConfig[] = [
   {

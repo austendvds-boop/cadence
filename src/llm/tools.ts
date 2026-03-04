@@ -69,7 +69,7 @@ const ALL_TOOL_DEFINITIONS: Record<string, FunctionToolDefinition> = {
     type: 'function',
     function: {
       name: 'complete_onboarding',
-      description: 'Complete onboarding, create a Stripe checkout link, and text the payment link to the collected owner_phone number.',
+      description: 'Complete onboarding, validate required fields, create a Stripe checkout link, and attempt to text it to owner_phone. If SMS fails, still return success with a spoken fallback message.',
       parameters: {
         type: 'object',
         properties: {},

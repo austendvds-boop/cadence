@@ -75,6 +75,12 @@ function isAbortError(err: unknown): boolean {
 const TWILIO_MULAW_BYTES_PER_SECOND = 8000;
 const TWILIO_MEDIA_FRAME_BYTES = 160; // 20ms @ 8kHz @ 8-bit mulaw
 const CHIME_FRAME_SAMPLES = TWILIO_MEDIA_FRAME_BYTES;
+const ONBOARDING_TENANT_ID = 'cadence-onboarding';
+
+function isOnboardingTenant(tenant: TenantConfig | undefined): boolean {
+  if (!tenant) return false;
+  return tenant.id === ONBOARDING_TENANT_ID || tenant.twilioNumber === '+14806313993';
+}
 
 function encodePcm16ToMuLaw(sample: number): number {
   const BIAS = 0x84;
@@ -391,6 +397,8 @@ export function handleTwilioMedia(ws: WebSocket) {
   const transcriptSegments: string[] = [];
   let callStartedAtMs: number | null = null;
   let sttUnavailableLogged = false;
+  let onboardingFirstTranscriptLogged = false;
+  let onboardingFirstModelTokenLogged = false;
 
   function resolvePendingPlaybackMarks(reason: string) {
     for (const [markName, pending] of Array.from(pendingPlaybackMarks.entries())) {
@@ -646,11 +654,20 @@ export function handleTwilioMedia(ws: WebSocket) {
   }
 
   const sttCallbacks = {
+    onConnected: () => {
+      if (!isOnboardingTenant(activeTenant)) return;
+      logger.info({ callSid, tenantId: activeTenant?.id }, '[ONBOARDING] STT connected');
+    },
     onInterim: (t: string) => {
-      if (introPlaying || !responding) return;
-
       const transcript = t.trim();
       if (!transcript) return;
+
+      if (isOnboardingTenant(activeTenant) && !onboardingFirstTranscriptLogged) {
+        onboardingFirstTranscriptLogged = true;
+        logger.info({ callSid, token: transcript.slice(0, 80) }, '[ONBOARDING] first transcript token');
+      }
+
+      if (introPlaying || !responding) return;
 
       const words = countWords(transcript);
       if ((isSpeaking || speaking) && words < 2) {
@@ -665,6 +682,12 @@ export function handleTwilioMedia(ws: WebSocket) {
     onFinal: (t: string) => {
       const transcript = t.trim();
       if (!transcript) return;
+
+      if (isOnboardingTenant(activeTenant) && !onboardingFirstTranscriptLogged) {
+        onboardingFirstTranscriptLogged = true;
+        logger.info({ callSid, token: transcript.slice(0, 80) }, '[ONBOARDING] first transcript token');
+      }
+
       if (introPlaying) return;
 
       const words = countWords(transcript);
@@ -736,6 +759,11 @@ export function handleTwilioMedia(ws: WebSocket) {
       const msg = await (async () => {
         try {
           return await runAgentStream(history, (token) => {
+            if (isOnboardingTenant(activeTenant) && !onboardingFirstModelTokenLogged) {
+              onboardingFirstModelTokenLogged = true;
+              logger.info({ callSid, token: token.slice(0, 80) }, '[ONBOARDING] first model response token');
+            }
+
             tokenBuffer.push(token);
             tokenQueue.push(token);
           }, { signal: llmAbortController.signal, tenant });
@@ -847,6 +875,12 @@ export function handleTwilioMedia(ws: WebSocket) {
         }
 
         logger.info({ streamSid, callSid, callerNumber, toNumber, tenantId: activeTenant.id }, 'Twilio stream started');
+        if (isOnboardingTenant(activeTenant)) {
+          logger.info(
+            { streamSid, callSid, callerNumber, toNumber, tenantId: activeTenant.id },
+            '[ONBOARDING] stream start'
+          );
+        }
 
         const greeting = activeTenant.greeting;
         history.push({ role: 'assistant', content: greeting });
