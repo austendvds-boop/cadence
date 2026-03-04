@@ -353,6 +353,7 @@ export function handleTwilioMedia(ws: WebSocket) {
   >();
   const pendingUtterances: string[] = [];
   const history: ChatMsg[] = [];
+  const onboardingFields: Record<string, string> = {};
   let sttUnavailableLogged = false;
 
   function resolvePendingPlaybackMarks(reason: string) {
@@ -685,7 +686,7 @@ export function handleTwilioMedia(ws: WebSocket) {
 
       if (depth > 5) {
         await speakText("I'm having some trouble right now. Let me connect you with Austen.");
-        await executeTool('transfer_to_human', {}, { callSid, callerNumber, tenant });
+        await executeTool('transfer_to_human', {}, { callSid, callerNumber, tenant, onboardingFields });
         return;
       }
 
@@ -737,7 +738,7 @@ export function handleTwilioMedia(ws: WebSocket) {
 
           logger.info({ tool: c.function.name, args }, 'tool call');
           try {
-            const result = await executeTool(c.function.name, args, { callSid, callerNumber, tenant });
+            const result = await executeTool(c.function.name, args, { callSid, callerNumber, tenant, onboardingFields });
             history.push({ role: 'tool', name: c.function.name, tool_call_id: c.id, content: JSON.stringify(result) });
           } catch (toolErr) {
             logger.error({ err: toolErr, tool: c.function.name }, 'tool execution failed');
@@ -764,7 +765,7 @@ export function handleTwilioMedia(ws: WebSocket) {
       try {
         await speakText('Sorry, I ran into a technical issue. Let me connect you with someone who can help.');
         if (activeTenant) {
-          await executeTool('transfer_to_human', {}, { callSid, callerNumber, tenant: activeTenant });
+          await executeTool('transfer_to_human', {}, { callSid, callerNumber, tenant: activeTenant, onboardingFields });
         }
       } catch (_) {
         ws.close();

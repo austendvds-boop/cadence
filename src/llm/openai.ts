@@ -4,7 +4,7 @@ import { buildSystemPrompt } from '../conversation/system-prompt';
 import type { TenantConfig } from '../config/tenants';
 import { env } from '../utils/env';
 import { logger } from '../utils/logger';
-import { toolDefinitions } from './tools';
+import { getToolDefinitionsForTenant } from './tools';
 
 export type ChatMsg = { role: 'system' | 'user' | 'assistant' | 'tool'; content: string; tool_call_id?: string; name?: string };
 
@@ -76,12 +76,14 @@ export async function runAgentStream(messages: ChatMsg[], onToken: (token: strin
   if (!llmClient) throw new Error('Missing OPENAI_API_KEY or GROQ_API_KEY');
   if (!options.tenant) throw new Error('Missing tenant configuration for LLM request');
 
+  const tenantToolDefinitions = getToolDefinitionsForTenant(options.tenant);
+
   const stream = await llmClient.chat.completions.create({
     model: LLM_MODEL,
     temperature: 0.7,
     stream: true,
     messages: buildMessagesWithSlidingWindow(messages, options.tenant) as any,
-    tools: toolDefinitions as any,
+    tools: tenantToolDefinitions as any,
   }, {
     signal: options.signal,
   });

@@ -1,5 +1,23 @@
 # Coder Context
 
+## 2026-03-03 (Cadence onboarding tenant + onboarding tools)
+- Purchased Twilio onboarding number: `+14806313993` (`PN5c3815a122aab4bf631f0312a5bf8c02`).
+- Set onboarding number voice webhook to `https://cadence-m48n.onrender.com/voice` (POST).
+- Updated `src/config/tenants.ts`:
+  - Added onboarding tenant `cadence-onboarding` mapped to `+14806313993`.
+  - Added onboarding greeting, owner cell, tool allowlist (`save_onboarding_field`, `complete_onboarding`), and provided onboarding system prompt.
+- Updated `src/llm/tools.ts`:
+  - Added function schemas for `save_onboarding_field` and `complete_onboarding`.
+  - Refactored to a tool-definition registry and exported tenant-scoped selection helper.
+- Updated `src/llm/openai.ts`:
+  - LLM tool exposure is now tenant-scoped via per-tenant allowlist.
+- Updated `src/tools/executor.ts`:
+  - Added `save_onboarding_field` (per-call in-memory field store).
+  - Added `complete_onboarding` (builds onboarding JSON summary and sends SMS to `+16026633502`).
+- Updated `src/websocket/handler.ts`:
+  - Added per-call onboarding field state and passed it through tool execution context.
+- Build verification: `npm run build` passed (TypeScript compile clean).
+
 ## 2026-03-02 (Dedicated SMS sender number for outbound texts)
 - Updated `src/twilio/service.ts`:
   - Changed `sendSms` sender to prefer `env.TWILIO_SMS_NUMBER` and fall back to `env.TWILIO_PHONE_NUMBER`.
