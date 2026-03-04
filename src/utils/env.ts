@@ -9,8 +9,6 @@ const EnvSchema = z.object({
   OPENAI_API_KEY: z.string().optional(),
   GROQ_API_KEY: z.string().optional(),
   OPENAI_MODEL: z.string().default('gpt-4o-mini'),
-  OPENAI_TTS_MODEL: z.string().default('tts-1'),
-  OPENAI_TTS_VOICE: z.string().default('alloy'),
   DEEPGRAM_API_KEY: z.string().optional(),
   UTTERANCE_END_MS: z.coerce.number().default(700),
   ENDPOINTING_MS: z.coerce.number().default(250),
@@ -21,14 +19,7 @@ const EnvSchema = z.object({
   TWILIO_SMS_NUMBER: z.string().optional(),
   TWILIO_WEBSOCKET_URL: z.string().optional(),
   AUSTEN_CELL_NUMBER: z.string().optional(),
-  ACUITY_MINE_USER: z.string().optional(),
-  ACUITY_MINE_KEY: z.string().optional(),
-  ACUITY_PARENTS_USER: z.string().optional(),
-  ACUITY_PARENTS_KEY: z.string().optional(),
   LOG_LEVEL: z.string().default('info'),
 });
 
 export const env = EnvSchema.parse(process.env);
-
-const hasLlmKey = Boolean(env.OPENAI_API_KEY || env.GROQ_API_KEY);
-export const hasRequiredRuntime = Boolean(hasLlmKey && env.DEEPGRAM_API_KEY && env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN);
