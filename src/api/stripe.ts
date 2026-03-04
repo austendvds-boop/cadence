@@ -13,7 +13,7 @@ import {
   type Client,
   type SubscriptionStatus,
 } from '../db/queries';
-import { provisionIncomingNumber, releaseNumber } from '../twilio/provisioning';
+import { isProtectedTwilioPhoneNumber, provisionIncomingNumber, releaseNumberDetailed } from '../twilio/provisioning';
 import { sendSms } from '../twilio/service';
 import { env } from '../utils/env';
 import { logger } from '../utils/logger';
@@ -75,7 +75,7 @@ function resolveProvisionAreaCode(client: Client, providedAreaCode?: string): st
 }
 
 function getWelcomeSmsDestination(client: Client): string {
-  return asTrimmedString(client.ownerPhone || client.transferNumber || '');
+  return asTrimmedString(client.ownerPhone || '');
 }
 
 function buildWelcomeSmsMessage(provisionedNumber: string): string {
@@ -265,6 +265,23 @@ async function provisionClientInline(clientId: string, options: ProvisionClientO
     throw new Error(`Client ${clientId} is not eligible for provisioning (status: ${client.subscriptionStatus})`);
   }
 
+  if (isProtectedTwilioPhoneNumber(client.twilioNumber)) {
+    logger.info(
+      {
+        clientId: client.id,
+        twilioNumber: client.twilioNumber,
+      },
+      'Protected Twilio number detected; skipping provisioning updates for this client'
+    );
+
+    if (client.subscriptionStatus !== 'active') {
+      const activatedProtectedClient = await updateClient(client.id, { subscriptionStatus: 'active' });
+      return activatedProtectedClient ?? client;
+    }
+
+    return client;
+  }
+
   if (client.twilioNumber && client.twilioNumberSid) {
     if (client.subscriptionStatus !== 'active') {
       const activatedClient = await updateClient(client.id, { subscriptionStatus: 'active' });
@@ -324,11 +341,33 @@ async function provisionClientInline(clientId: string, options: ProvisionClientO
 }
 
 async function releaseClientNumber(client: Client): Promise<void> {
+  if (isProtectedTwilioPhoneNumber(client.twilioNumber)) {
+    logger.warn(
+      {
+        clientId: client.id,
+        phoneNumber: client.twilioNumber,
+      },
+      'Skipped releasing protected Twilio number'
+    );
+    return;
+  }
+
   if (!client.twilioNumberSid) {
     return;
   }
 
-  const releaseResult = await releaseNumber(client.twilioNumberSid);
+  const releaseResult = await releaseNumberDetailed(client.twilioNumberSid);
+
+  if (releaseResult.reason === 'protected_number') {
+    logger.warn(
+      {
+        clientId: client.id,
+        phoneNumber: releaseResult.phoneNumber,
+      },
+      'Skipped releasing protected Twilio number'
+    );
+    return;
+  }
 
   if (releaseResult.released || releaseResult.reason === 'not_found') {
     logger.info(
@@ -346,17 +385,6 @@ async function releaseClientNumber(client: Client): Promise<void> {
       twilioNumber: null,
       twilioNumberSid: null,
     });
-    return;
-  }
-
-  if (releaseResult.reason === 'protected_number') {
-    logger.warn(
-      {
-        clientId: client.id,
-        phoneNumber: releaseResult.phoneNumber,
-      },
-      'Skipped releasing protected Twilio number'
-    );
   }
 }
 
@@ -710,16 +738,35 @@ export async function handleProvisionRequest(req: Request, res: Response) {
     const body = asRecord(req.body);
     const clientRecord = asRecord(body.client);
 
-    const clientId = asTrimmedString(body.clientId || body.client_id || clientRecord.id);
+    let clientId = asTrimmedString(body.clientId || body.client_id || clientRecord.id || clientRecord.client_id);
+
     if (!clientId) {
-      return res.status(400).json({ error: 'clientId is required' });
+      const ownerEmail = asTrimmedString(
+        body.ownerEmail
+        || body.owner_email
+        || clientRecord.ownerEmail
+        || clientRecord.owner_email
+      );
+
+      if (ownerEmail) {
+        const client = await getClientByOwnerEmail(ownerEmail);
+        clientId = client?.id ?? '';
+      }
+    }
+
+    if (!clientId) {
+      return res.status(400).json({ error: 'clientId (or ownerEmail) is required' });
     }
 
     const areaCode = normalizeAreaCode(
       body.areaCode
       || body.area_code
+      || body.preferredAreaCode
+      || body.preferred_area_code
       || clientRecord.areaCode
       || clientRecord.area_code
+      || clientRecord.preferredAreaCode
+      || clientRecord.preferred_area_code
     );
 
     const provisionedClient = await provisionClientInline(clientId, { areaCode });

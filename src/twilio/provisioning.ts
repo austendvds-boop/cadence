@@ -3,8 +3,13 @@ import { logger } from '../utils/logger';
 import { twilioClient } from './service';
 
 const PROVISION_VOICE_WEBHOOK_URL = 'https://cadence-m48n.onrender.com/incoming-call';
-const PROTECTED_TWILIO_NUMBERS = new Set<string>(['+18773464394', '+14806313993']);
+export const PROTECTED_TWILIO_NUMBERS = new Set<string>(['+18773464394', '+14806313993']);
 const DEFAULT_NEARBY_AREA_CODES = ['480', '602', '623', '520', '928'];
+
+export function isProtectedTwilioPhoneNumber(phoneNumber: string | null | undefined): boolean {
+  const normalized = normalizePhoneNumber(phoneNumber || '');
+  return Boolean(normalized && PROTECTED_TWILIO_NUMBERS.has(normalized));
+}
 
 const NEARBY_AREA_CODES: Record<string, string[]> = {
   '480': ['602', '623', '520', '928'],
@@ -130,7 +135,7 @@ async function listAvailableLocalNumbers(areaCode: string | null): Promise<strin
 
   return available
     .map((number) => normalizePhoneNumber(number.phoneNumber || ''))
-    .filter((phoneNumber): phoneNumber is string => Boolean(phoneNumber) && !PROTECTED_TWILIO_NUMBERS.has(phoneNumber));
+    .filter((phoneNumber): phoneNumber is string => Boolean(phoneNumber) && !isProtectedTwilioPhoneNumber(phoneNumber));
 }
 
 async function purchasePhoneNumber(candidatePhoneNumber: string, attemptedAreaCode: string | null): Promise<ProvisionNumberResult> {
@@ -186,7 +191,7 @@ export async function provisionIncomingNumber(preferredAreaCode?: string | null)
   throw new Error('No available Twilio local numbers found in the US');
 }
 
-export async function releaseNumber(twilioNumberSid: string): Promise<ReleaseNumberResult> {
+export async function releaseNumberDetailed(twilioNumberSid: string): Promise<ReleaseNumberResult> {
   const sid = twilioNumberSid.trim();
   if (!sid) {
     throw new Error('Twilio number SID is required');
@@ -199,7 +204,7 @@ export async function releaseNumber(twilioNumberSid: string): Promise<ReleaseNum
     const incomingNumber = await client.incomingPhoneNumbers(sid).fetch();
     normalizedPhoneNumber = normalizePhoneNumber(incomingNumber.phoneNumber || '') || undefined;
 
-    if (normalizedPhoneNumber && PROTECTED_TWILIO_NUMBERS.has(normalizedPhoneNumber)) {
+    if (isProtectedTwilioPhoneNumber(normalizedPhoneNumber)) {
       return {
         released: false,
         skipped: true,
@@ -227,4 +232,8 @@ export async function releaseNumber(twilioNumberSid: string): Promise<ReleaseNum
 
     throw error;
   }
+}
+
+export async function releaseNumber(twilioNumberSid: string): Promise<void> {
+  await releaseNumberDetailed(twilioNumberSid);
 }

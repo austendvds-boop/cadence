@@ -1,5 +1,15 @@
 # Coder Context
 
+## 2026-03-03 (Automated Twilio provisioning + protected-number release guard)
+- Completed end-to-end provisioning path used by `POST /api/provision` / Stripe webhook provisioning flow in `src/api/stripe.ts`.
+- Provisioning now resolves `clientId` from `client.id`/`client_id` and can fall back to `ownerEmail` lookup when needed.
+- Provisioning retains area-code preference handling with nearby-area fallback and final US-wide fallback via Twilio AvailablePhoneNumbers API (`src/twilio/provisioning.ts`).
+- Added explicit guardrails so protected numbers are never modified/released: DVDS `+18773464394` and onboarding `+14806313993`.
+- Added protected-number skip guard in `provisionClientInline()` so those tenants are never reassigned during provisioning.
+- Refined welcome SMS target to `owner_phone` only and kept message text as: `Welcome to Cadence! Your AI receptionist is live at [number]...`.
+- Added explicit deactivation helper export `releaseNumber(twilioNumberSid: string): Promise<void>` (with detailed internal variant used for webhook logging).
+- Build verification: `npm run build` passed (TypeScript compile clean).
+
 ## 2026-03-03 (DB-backed routing migration hardening)
 - Confirmed inbound routing now supports both `POST /incoming-call` and `POST /voice` and passes Twilio `To` into websocket stream params (`toNumber` + `calledNumber`).
 - Confirmed runtime tenant selection path is DB-first (`getClientByTwilioNumber`) with in-memory fallback (`getTenant`) and a 5-minute in-memory cache keyed by Twilio number.
