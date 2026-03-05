@@ -1,5 +1,39 @@
 # Coder Context
 
+## 2026-03-05 (Men's Lounge tenant provisioning + Twilio number purchase)
+- Task type: data-only deploy for new Cadence tenant (`mens-lounge`) in Neon Postgres + Twilio number purchase.
+- Read/verified tenant tooling first:
+  - reviewed `scripts/rebase-tenant-from-baseline.ts` to confirm it rebases existing tenants (not suitable for creating a brand-new tenant row).
+- Railway variable lookup:
+  - queried Railway GraphQL with current project/env/service ids.
+  - no `DATABASE_URL` variable was exposed on the live service config (service ids in task prompt were stale/mismatched).
+  - used the existing Cadence Neon credential source (`C:\Users\austen\.openclaw\credentials\neon-cadence-db.txt`) to execute DB data steps.
+- DB changes (Neon, `clients` table):
+  - inserted new tenant row with `tenant_key = mens-lounge`.
+  - set:
+    - `business_name = Men's Lounge Barbershop`
+    - `greeting = Hey, thanks for calling Men's Lounge Barbershop! How can I help you?`
+    - `timezone = America/Phoenix`
+    - `transfer_number = +16235563193`
+    - `system_prompt` = provided Men's Lounge prompt (verbatim from deploy task)
+    - initial `phone_number = NULL` before Twilio purchase
+  - after Twilio purchase, updated:
+    - `phone_number = +16232536931`
+    - `twilio_number_sid = PN39a6da3415714669881e3b19563f197f`
+- Twilio provisioning:
+  - searched available US local numbers in area code `623` and purchased `+16232536931`.
+  - set voice webhook at purchase time:
+    - `VoiceUrl = https://cadence-v2-production.up.railway.app/incoming-call`
+    - `VoiceMethod = POST`
+  - verified webhook persisted via Twilio IncomingPhoneNumber lookup by SID.
+- Safety verification:
+  - confirmed new number maps only to `mens-lounge` tenant row.
+  - confirmed DVDS tenant remains intact with `phone_number = +18773464394` and `tenant_key = dvds`.
+- Docs added:
+  - `docs/mens-lounge-deploy.md` (deployment summary + verification snapshot).
+- Validation/build:
+  - `npm run build` ✅ (no code changes; build still passes).
+
 ## 2026-03-04 (Onboarding summary SMS target -> Austen personal number)
 - Updated onboarding summary destination in `src/tools/executor.ts`:
   - `complete_onboarding` now resolves `ONBOARDING_SUMMARY_SMS_TO` from env (`ONBOARDING_SUMMARY_SMS_TO`) with fallback `+16026633503`.
